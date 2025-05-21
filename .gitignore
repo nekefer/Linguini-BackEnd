@@ -1,0 +1,82 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Virtual environment
+venv/
+.venv/
+
+# Poetry
+poetry.lock
+
+# pipenv
+Pipfile.lock
+
+# PyInstaller
+*.manifest
+*.spec
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pytest
+.pytest_cache/
+
+# coverage
+htmlcov/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# pyright
+typings/
+
+# pylint
+pylint-report.txt
+pylint.log
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Logs
+*.log
+
+# Build and dist
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# FastAPI specific (if using Uvicorn log files or other outputs)
+*.db
+*.sqlite3
+
+# Docker
+*.pid
+docker-compose.override.yml
+
+# System files
+.DS_Store
+Thumbs.db
