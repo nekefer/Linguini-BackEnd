@@ -38,3 +38,6 @@ def change_password(db: Session, user_id: UUID, password_change: models.Password
     except Exception as e:
         logging.error(f"Error during password change for user ID: {user_id}. Error: {str(e)}")
         raise
+
+
+
