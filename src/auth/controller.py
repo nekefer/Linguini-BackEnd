@@ -8,8 +8,8 @@ from . import service
 from fastapi.security import OAuth2PasswordRequestForm
 from ..database.core import DbSession
 from ..rate_limiter import limiter
-from ..auth.oauth_config import oauth
-from ..utils.config import Settings
+from .google.oauth_config import oauth  # fixed import
+from .google.config import Settings    # fixed import
 from functools import lru_cache
 from dotenv import load_dotenv
 
@@ -33,45 +33,36 @@ async def register_user(request: Request, db: DbSession,
 
 @router.post("/token", response_model=models.Token)
 async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-                                 db: DbSession):
-    return service.login_for_access_token(form_data, db)
+                                 db: DbSession,
+                                 settings: Annotated[Settings, Depends(get_settings)]):
+    
+    return service.login_for_access_token(form_data, db, settings)
 
 @router.get("/google/login")
 async def google_login(request: Request):
     redirect_uri = request.url_for('google_auth')
+    # print("LOGIN COOKIES:", request.cookies)
     return await oauth.google.authorize_redirect(request, redirect_uri=redirect_uri)
-
-
-# @router.get("/google/callback")
-# async def google_auth(request: Request):
-#     token = await oauth.google.authorize_access_token(request)
-#     user = await oauth.google.parse_id_token(request, token)
-
-#     return JSONResponse(content={"user":user})
 
 
 # Handle the OAuth callback from Google
 @router.get("/google/callback")
-async def google_auth(request: Request,settings: Annotated[Settings, Depends(get_settings)]):
+async def google_auth(
+    request: Request,
+    db: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)]
+):
     try:
         token = await oauth.google.authorize_access_token(request)
         user_info = token.get("userinfo") or {}
-
-        # Extract user details
-        username = user_info.get("email")  # Use email as username
-        print("User Info:", user_info)  # Debugging step
-
-        # Generate a JWT token with auth_method="google"
-        access_token = service.create_access_token(
-            username,
-            109,
-            expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
-        )
-
-        return {"access_token": access_token, "token": token}
+       
+        # Use your service to authenticate or register the user
+        jwt_token = service.google_authenticate_user(db, user_info, settings)
+        print("user_info:", user_info)
+        return {"access_token": jwt_token.access_token, "token_type": jwt_token.token_type}
     except Exception as e:
         import traceback
-        print("Error:", traceback.format_exc())  # Debugging step
+        print("Error:", traceback.format_exc())
         return {"error": str(e)}
 
 

@@ -16,7 +16,7 @@ app = FastAPI()
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("GOOGLE_CLIENT_SECRET")  
+    secret_key=os.getenv("SECRET_KEY")  # Use SECRET_KEY for session, not Google secret
 )
 
 # Configure CORS

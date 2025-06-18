@@ -12,5 +12,8 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str
     GOOGLE_CLIENT_SECRET: str
     GOOGLE_REDIRECT_URI: str
+    GOOGLE_AUTHORIZATION_URL: str 
+
+    JWT_SECRET_KEY: str
 
     model_config = SettingsConfigDict(env_file=".env")
