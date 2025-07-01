@@ -11,6 +11,15 @@ from . import models
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from ..exceptions import AuthenticationError
 import logging
+from .google.config import Settings
+from functools import lru_cache
+from dotenv import load_dotenv
+
+load_dotenv()
+
+@lru_cache
+def get_settings():
+    return Settings()
 
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
@@ -26,9 +35,20 @@ def get_password_hash(password: str) -> str:
 
 def authenticate_user(email: str, password: str, db: Session) -> User | bool:
     user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(password, user.password_hash):
+    if not user:
         logging.warning(f"Failed authentication attempt for email: {email}")
         return False
+    
+    # Only allow password login if auth_method is 'password' or 'both'
+    if user.auth_method not in ('password', 'both'):
+        logging.warning(f"User {email} attempted password login but auth_method is '{user.auth_method}'")
+        return False
+    
+    # Check if user has a password hash and verify it
+    if not user.password_hash or not verify_password(password, user.password_hash):
+        logging.warning(f"Failed authentication attempt for email: {email}")
+        return False
+    
     return user
 
 
@@ -52,6 +72,10 @@ def verify_token(token: str, secret_key: str, algorithm: str) -> models.TokenDat
 
 
 def register_user(db: Session, register_user_request: models.RegisterUserRequest) -> None:
+    "check if the user already exists, if raise an error, otherwise create a new user"
+    existing_user = db.query(User).filter(User.email == register_user_request.email).first()
+    if existing_user:
+        raise AuthenticationError("A user with this email already exists.")
     try:
         create_user_model = User(
             id=uuid4(),
@@ -63,11 +87,12 @@ def register_user(db: Session, register_user_request: models.RegisterUserRequest
         db.add(create_user_model)
         db.commit()
     except Exception as e:
+        db.rollback()  # Rollback on error to prevent partial data
         logging.error(f"Failed to register user: {register_user_request.email}. Error: {str(e)}")
-        raise
+        raise AuthenticationError(f"Registration failed: {str(e)}")
     
     
-def get_current_user(token: Annotated[str, Depends(oauth2_bearer)], settings) -> models.TokenData:
+def get_current_user(token: Annotated[str, Depends(oauth2_bearer)],  settings: Annotated[Settings, Depends(get_settings)]) -> models.TokenData:
     return verify_token(token, settings.JWT_SECRET_KEY, settings.ALGORITHM)
 
 CurrentUser = Annotated[models.TokenData, Depends(get_current_user)]
@@ -91,28 +116,35 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> models.T
     last_name = user_info.get("family_name", "")
     google_id = user_info.get("sub")
     avatar_url = user_info.get("picture")
-    full_name = user_info.get("name", f"{first_name} {last_name}")
+    
     if not email:
         logging.error("Google OAuth did not return an email.")
         raise AuthenticationError("Google OAuth did not return an email.")
 
     user = db.query(User).filter(User.email == email).first()
     if user:
-        # If user exists and has a password, set auth_method to 'both'
-        if user.password_hash:
-            user.auth_method = 'both'
-        else:
-            user.auth_method = 'google'
+        # Only allow Google login if user has a google_id or auth_method allows Google
+        if not user.google_id and user.auth_method not in ('google', 'both'):
+            logging.warning(f"User {email} attempted Google login but is not authorized for Google login.")
+            raise AuthenticationError("Google login not enabled for this user.")
+        
+        # Update auth_method based on existing credentials
+        if user.password_hash and user.auth_method != 'both':
+            user.auth_method = 'both'  # User has both password and Google
+        elif not user.password_hash and user.auth_method != 'google':
+            user.auth_method = 'google'  # User only has Google
+            
         # Update google_id and avatar_url if not set
         if not user.google_id:
             user.google_id = google_id
         if avatar_url:
             user.avatar_url = avatar_url
+            
         db.commit()
         db.refresh(user)
         logging.info(f"Authenticated existing user via Google OAuth: {email}")
     else:
-        # Register the user if not found
+        # Register new user with Google OAuth
         user = User(
             id=uuid4(),
             email=email,

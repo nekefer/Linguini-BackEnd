@@ -10,6 +10,12 @@ load_dotenv()
 """ You can add a DATABASE_URL environment variable to your .env file """
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Validate DATABASE_URL
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is required")
+if not DATABASE_URL.startswith(('postgresql://', 'sqlite://', 'mysql://')):
+    raise ValueError("DATABASE_URL must be a valid database URL")
+
 """ Or hard code SQLite here """
 # DATABASE_URL = "sqlite:///./todosapp.db"
 

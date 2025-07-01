@@ -10,9 +10,9 @@ oauth.register(
     client_id=config('GOOGLE_CLIENT_ID'),
     client_secret=config('GOOGLE_CLIENT_SECRET'),
     authorize_url=config('GOOGLE_AUTHORIZATION_URL'),
-    authorize_params={"scope": "openid email profile"},
+    authorize_params={"scope": "openid email profile https://www.googleapis.com/auth/youtube.readonly"},
     redirect_uri=config('GOOGLE_REDIRECT_URI'),
     access_token_url="https://oauth2.googleapis.com/token",
-    client_kwargs={"scope": "openid email profile"},
+    client_kwargs={"scope": "openid email profile https://www.googleapis.com/auth/youtube.readonly"},
     server_metadata_url="https://accounts.google.com/.well-known/openid-configuration"
 )

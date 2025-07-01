@@ -10,13 +10,18 @@ import os
 
 configure_logging(LogLevels.info)
 
-
+# Validate SECRET_KEY
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable is required")
+if len(SECRET_KEY) < 32:
+    raise ValueError("SECRET_KEY must be at least 32 characters long for security")
 
 app = FastAPI()
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("SECRET_KEY")  # Use SECRET_KEY for session, not Google secret
+    secret_key=SECRET_KEY  # Use validated SECRET_KEY
 )
 
 # Configure CORS
@@ -35,9 +40,10 @@ app.add_middleware(
 )
 
 
-""" Only uncomment below to create new tables, 
-otherwise the tests will fail if not connected
-"""
-Base.metadata.create_all(bind=engine)
+# Only create tables in development environment
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+if ENVIRONMENT == "development":
+    Base.metadata.create_all(bind=engine)
+    print("Database tables created successfully (development mode)")
 
 register_routes(app)

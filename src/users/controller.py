@@ -1,10 +1,10 @@
-from fastapi import APIRouter, status
+from fastapi import APIRouter, status, Request, Cookie
 from uuid import UUID
 
 from ..database.core import DbSession
 from . import models
 from . import service
-from ..auth.service import CurrentUser
+from ..auth.service import CurrentUser, verify_token, get_settings
 
 router = APIRouter(
     prefix="/users",
@@ -13,8 +13,22 @@ router = APIRouter(
 
 
 @router.get("/me", response_model=models.UserResponse)
-def get_current_user(current_user: CurrentUser, db: DbSession):
-    return service.get_user_by_id(db, current_user.get_uuid())
+def get_current_user(
+    current_user: CurrentUser = None,
+    db: DbSession = None,
+    auth_token: str = Cookie(default=None),
+    request: Request = None
+):
+    # Try to get user from Authorization header (JWT in Bearer)
+    if current_user:
+        return service.get_user_by_id(db, current_user.get_uuid())
+    # If not, try to get user from httpOnly cookie (Google login)
+    if auth_token:
+        settings = get_settings()
+        token_data = verify_token(auth_token, settings.JWT_SECRET_KEY, settings.ALGORITHM)
+        return service.get_user_by_id(db, UUID(token_data.user_id))
+    # If neither, unauthorized
+    return {"error": "Not authenticated"}
 
 
 @router.put("/change-password", status_code=status.HTTP_200_OK)
