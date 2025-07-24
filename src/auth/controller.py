@@ -12,6 +12,8 @@ from ..exceptions import AuthenticationError
 from ..users.service import get_user_by_id
 from .google.oauth_config import oauth  # fixed import
 from ..config import get_settings, Settings
+from ..entities.user import User
+import urllib.parse
 
 router = APIRouter(
     prefix='/auth',
@@ -77,18 +79,24 @@ async def google_auth(
         if not user_info:
             raise AuthenticationError("Google OAuth failed - no user info received")
         
-        # Authenticate or register user
-        auth_result = service.google_authenticate_user(db, user_info, settings)
-        jwt_token = auth_result["token"]
-        user_data = auth_result["user"]
-        is_new_user = auth_result["is_new_user"]
+        # Authenticate or register user - this returns a Token object
+        jwt_token = service.google_authenticate_user(db, user_info, settings)
+       
+        
+        # Extract user info from the user_info dict we already have
+        user_email = user_info.get("email", "")
+        is_new_user = False  # We'll need to determine this differently
+        
+        # Check if user exists to determine if it's a new user
+        existing_user = db.query(User).filter(User.email == user_email).first()
+        is_new_user = existing_user is None
         
         # Create response with redirect to frontend
         # Redirect to different pages based on whether it's a new user
         if is_new_user:
-            redirect_url = "http://localhost:5173/welcome"  # Welcome page for new users
+            redirect_url = f"{settings.frontend_url}/welcome"  # Welcome page for new users
         else:
-            redirect_url = "http://localhost:5173/dashboard"  # Dashboard for existing users
+            redirect_url = f"{settings.frontend_url}/dashboard"  # Dashboard for existing users
         
         response = RedirectResponse(url=redirect_url)
         
@@ -97,7 +105,7 @@ async def google_auth(
             key="access_token",
             value=jwt_token.access_token,
             httponly=True,
-            secure=False,  # Set to True in production with HTTPS
+            secure=settings.is_production,  # Use secure cookies in production
             samesite="lax",
             max_age=3600,  # 1 hour
             path="/"
@@ -106,9 +114,9 @@ async def google_auth(
         # Set user info in a separate cookie
         response.set_cookie(
             key="user_email",
-            value=user_data["email"],
+            value=user_email,
             httponly=False,  # Allow JavaScript access for display
-            secure=False,
+            secure=settings.is_production,
             samesite="lax",
             max_age=3600,
             path="/"
@@ -119,7 +127,7 @@ async def google_auth(
             key="user_type",
             value="new" if is_new_user else "existing",
             httponly=False,
-            secure=False,
+            secure=settings.is_production,
             samesite="lax",
             max_age=3600,
             path="/"
@@ -130,14 +138,14 @@ async def google_auth(
     except AuthenticationError as e:
         # Redirect to frontend with error
         error_param = urllib.parse.quote(str(e.detail))
-        redirect_url = f"http://localhost:5173/?error={error_param}"
+        redirect_url = f"{settings.frontend_url}/?error={error_param}"
         return RedirectResponse(url=redirect_url)
         
     except Exception as e:
         print(f"Google OAuth error: {str(e)}")
         # Redirect to frontend with error
         error_param = urllib.parse.quote("Google OAuth failed")
-        redirect_url = f"http://localhost:5173/?error={error_param}"
+        redirect_url = f"{settings.frontend_url}/?error={error_param}"
         return RedirectResponse(url=redirect_url)
 
 

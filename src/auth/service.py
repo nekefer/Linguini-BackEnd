@@ -157,26 +157,5 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
         db.refresh(user)
         logging.info(f"Registered new user via Google OAuth: {email}")
 
-<<<<<<< HEAD
-    token = create_access_token(user.email, user.id, timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES), settings.JWT_SECRET_KEY, settings.ALGORITHM)
-    
-    return {
-        "token": models.Token(access_token=token, token_type='bearer'),
-        "user": {
-            "id": str(user.id),
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "auth_method": user.auth_method,
-            "avatar_url": user.avatar_url,
-            "is_active": user.is_active,
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-            "updated_at": user.updated_at.isoformat() if user.updated_at else None
-        },
-        "is_new_user": is_new_user,
-        "auth_method": "google"
-    }
-=======
     token = create_access_token(user.email, user.id, timedelta(minutes=settings.access_token_expire_minutes), settings.jwt_secret_key, settings.algorithm)
     return models.Token(access_token=token, token_type='bearer')
->>>>>>> 53d36aaa9240b34f2db3dc85eaeae4b5b7bbfab8
