@@ -10,16 +10,8 @@ from src.entities.user import User
 from . import models
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from ..exceptions import AuthenticationError
+from ..config import get_settings, Settings
 import logging
-from .google.config import Settings
-from functools import lru_cache
-from dotenv import load_dotenv
-
-load_dotenv()
-
-@lru_cache
-def get_settings():
-    return Settings()
 
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
@@ -93,7 +85,7 @@ def register_user(db: Session, register_user_request: models.RegisterUserRequest
     
     
 def get_current_user(token: Annotated[str, Depends(oauth2_bearer)],  settings: Annotated[Settings, Depends(get_settings)]) -> models.TokenData:
-    return verify_token(token, settings.JWT_SECRET_KEY, settings.ALGORITHM)
+    return verify_token(token, settings.jwt_secret_key, settings.algorithm)
 
 CurrentUser = Annotated[models.TokenData, Depends(get_current_user)]
 
@@ -103,7 +95,7 @@ def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depen
     user = authenticate_user(form_data.username, form_data.password, db)
     if not user:
         raise AuthenticationError()
-    token = create_access_token(user.email, user.id, timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES), settings.JWT_SECRET_KEY, settings.ALGORITHM)
+    token = create_access_token(user.email, user.id, timedelta(minutes=settings.access_token_expire_minutes), settings.jwt_secret_key, settings.algorithm)
     return models.Token(access_token=token, token_type='bearer')
 
 
@@ -165,6 +157,7 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
         db.refresh(user)
         logging.info(f"Registered new user via Google OAuth: {email}")
 
+<<<<<<< HEAD
     token = create_access_token(user.email, user.id, timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES), settings.JWT_SECRET_KEY, settings.ALGORITHM)
     
     return {
@@ -183,3 +176,7 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
         "is_new_user": is_new_user,
         "auth_method": "google"
     }
+=======
+    token = create_access_token(user.email, user.id, timedelta(minutes=settings.access_token_expire_minutes), settings.jwt_secret_key, settings.algorithm)
+    return models.Token(access_token=token, token_type='bearer')
+>>>>>>> 53d36aaa9240b34f2db3dc85eaeae4b5b7bbfab8
