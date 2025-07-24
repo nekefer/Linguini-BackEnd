@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # SQLAlchemy
-    DATABASE_URL: str
+    DATABASE_URL: str 
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str

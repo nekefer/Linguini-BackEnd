@@ -107,9 +107,10 @@ def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depen
     return models.Token(access_token=token, token_type='bearer')
 
 
-def google_authenticate_user(db: Session, user_info: dict, settings) -> models.Token:
+def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
     """
-    Authenticate or register a user using Google OAuth info, then return a JWT token.
+    Authenticate or register a user using Google OAuth info.
+    Returns a dict with token, user info, and whether it's a new registration.
     """
     email = user_info.get("email")
     first_name = user_info.get("given_name", "")
@@ -122,7 +123,10 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> models.T
         raise AuthenticationError("Google OAuth did not return an email.")
 
     user = db.query(User).filter(User.email == email).first()
+    is_new_user = False
+    
     if user:
+        # Existing user - Login
         # Only allow Google login if user has a google_id or auth_method allows Google
         if not user.google_id and user.auth_method not in ('google', 'both'):
             logging.warning(f"User {email} attempted Google login but is not authorized for Google login.")
@@ -144,7 +148,8 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> models.T
         db.refresh(user)
         logging.info(f"Authenticated existing user via Google OAuth: {email}")
     else:
-        # Register new user with Google OAuth
+        # New user - Registration
+        is_new_user = True
         user = User(
             id=uuid4(),
             email=email,
@@ -161,4 +166,20 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> models.T
         logging.info(f"Registered new user via Google OAuth: {email}")
 
     token = create_access_token(user.email, user.id, timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES), settings.JWT_SECRET_KEY, settings.ALGORITHM)
-    return models.Token(access_token=token, token_type='bearer')
+    
+    return {
+        "token": models.Token(access_token=token, token_type='bearer'),
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "auth_method": user.auth_method,
+            "avatar_url": user.avatar_url,
+            "is_active": user.is_active,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "updated_at": user.updated_at.isoformat() if user.updated_at else None
+        },
+        "is_new_user": is_new_user,
+        "auth_method": "google"
+    }
