@@ -4,7 +4,8 @@ from uuid import UUID
 from ..database.core import DbSession
 from . import models
 from . import service
-from ..auth.service import CurrentUser, verify_token, get_settings
+from ..auth.service import CurrentUser, verify_token
+from ..config import get_settings
 
 router = APIRouter(
     prefix="/users",
@@ -25,7 +26,7 @@ def get_current_user(
     # If not, try to get user from httpOnly cookie (Google login)
     if auth_token:
         settings = get_settings()
-        token_data = verify_token(auth_token, settings.JWT_SECRET_KEY, settings.ALGORITHM)
+        token_data = verify_token(auth_token, settings.jwt_secret_key, settings.algorithm)
         return service.get_user_by_id(db, UUID(token_data.user_id))
     # If neither, unauthorized
     return {"error": "Not authenticated"}

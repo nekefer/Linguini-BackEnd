@@ -11,20 +11,12 @@ from ..rate_limiter import limiter
 from ..exceptions import AuthenticationError
 from ..users.service import get_user_by_id
 from .google.oauth_config import oauth  # fixed import
-from .google.config import Settings    # fixed import
-from functools import lru_cache
-from dotenv import load_dotenv
-
-load_dotenv()
+from ..config import get_settings, Settings
 
 router = APIRouter(
     prefix='/auth',
     tags=['auth']
 )
-
-@lru_cache
-def get_settings():
-    return Settings()
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/hour")

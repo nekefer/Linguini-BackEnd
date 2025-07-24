@@ -2,26 +2,14 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
-import os
-from dotenv import load_dotenv
+from ..config import get_settings
 
-load_dotenv()
+settings = get_settings()
 
-""" You can add a DATABASE_URL environment variable to your .env file """
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Use the validated DATABASE_URL from settings
+DATABASE_URL = settings.database_url
 
-# Validate DATABASE_URL
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is required")
-if not DATABASE_URL.startswith(('postgresql://', 'sqlite://', 'mysql://')):
-    raise ValueError("DATABASE_URL must be a valid database URL")
-
-""" Or hard code SQLite here """
-# DATABASE_URL = "sqlite:///./todosapp.db"
-
-""" Or hard code PostgreSQL here """
-# DATABASE_URL="postgresql://postgres:postgres@db:5432/cleanfastapi"
-
+# The URL is already validated in the Settings class
 engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
