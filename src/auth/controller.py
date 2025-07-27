@@ -24,10 +24,11 @@ router = APIRouter(
 @limiter.limit("5/hour")
 async def register_user(request: Request, db: DbSession,
                       register_user_request: models.RegisterUserRequest):
-    service.register_user(db, register_user_request)
+    service.register_user(db, register_user_request, request)
 
 
 @router.post("/token", response_model=models.Token)
+@limiter.limit("10/hour")
 async def login_for_access_token(
     request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -35,13 +36,17 @@ async def login_for_access_token(
     settings: Annotated[Settings, Depends(get_settings)]
 ):
     """Login endpoint that also sets HttpOnly cookies for consistency."""
-    token_data = service.login_for_access_token(form_data, db, settings)
+    token_data = service.login_for_access_token(form_data, db, settings, request)
     
     # Create response with token data
-    response = JSONResponse(content={
+    response_content = {
         "access_token": token_data.access_token,
         "token_type": token_data.token_type
-    })
+    }
+    if token_data.refresh_token:
+        response_content["refresh_token"] = token_data.refresh_token
+    
+    response = JSONResponse(content=response_content)
     
     # Set JWT token in HttpOnly cookie for consistency
     response.set_cookie(
@@ -51,6 +56,60 @@ async def login_for_access_token(
         secure=False,  # Set to True in production with HTTPS
         samesite="lax",
         max_age=3600,  # 1 hour
+        path="/"
+    )
+    
+    # Set refresh token in HttpOnly cookie if available
+    if token_data.refresh_token:
+        response.set_cookie(
+            key="refresh_token",
+            value=token_data.refresh_token,
+            httponly=True,
+            secure=False,  # Set to True in production with HTTPS
+            samesite="lax",
+            max_age=30 * 24 * 3600,  # 30 days
+            path="/"
+        )
+    
+    return response
+
+@router.post("/refresh", response_model=models.RefreshTokenResponse)
+@limiter.limit("20/hour")
+async def refresh_token(
+    request: Request,
+    refresh_request: models.RefreshTokenRequest,
+    db: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)]
+):
+    """Refresh access token using refresh token."""
+    token_data = service.refresh_access_token(refresh_request, db, settings, request)
+    
+    # Create response with new tokens
+    response = JSONResponse(content={
+        "access_token": token_data.access_token,
+        "token_type": token_data.token_type,
+        "refresh_token": token_data.refresh_token
+    })
+    
+    # Set new JWT token in HttpOnly cookie
+    response.set_cookie(
+        key="access_token",
+        value=token_data.access_token,
+        httponly=True,
+        secure=False,  # Set to True in production with HTTPS
+        samesite="lax",
+        max_age=3600,  # 1 hour
+        path="/"
+    )
+    
+    # Set new refresh token in HttpOnly cookie
+    response.set_cookie(
+        key="refresh_token",
+        value=token_data.refresh_token,
+        httponly=True,
+        secure=False,  # Set to True in production with HTTPS
+        samesite="lax",
+        max_age=30 * 24 * 3600,  # 30 days
         path="/"
     )
     
@@ -175,13 +234,34 @@ async def get_current_user_info(current_user: service.CurrentUser, db: DbSession
 
 
 @router.post("/logout")
-async def logout():
-    """Logout endpoint - clears HttpOnly cookies."""
+async def logout(
+    request: Request,
+    current_user: service.CurrentUser,
+    db: DbSession,
+    refresh_token: str | None = None
+):
+    """Logout endpoint - clears HttpOnly cookies and revokes refresh tokens."""
+    user_id = current_user.get_uuid()
+    
+    # Get refresh token from request body or cookies
+    if not refresh_token:
+        refresh_token = request.cookies.get("refresh_token")
+    
+    # Revoke refresh token(s) and log the logout
+    if user_id:
+        service.logout_user(refresh_token, user_id, db, request)
+    
     response = JSONResponse(content={"message": "Successfully logged out"})
     
     # Clear the JWT token cookie
     response.delete_cookie(
         key="access_token",
+        path="/"
+    )
+    
+    # Clear the refresh token cookie
+    response.delete_cookie(
+        key="refresh_token",
         path="/"
     )
     
