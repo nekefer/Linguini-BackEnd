@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from .database.core import engine, Base
-from .entities.user import User  # Import models to register them
 from .api import register_routes
 from .logging import configure_logging
 from .config import get_settings
