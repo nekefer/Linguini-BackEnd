@@ -79,17 +79,15 @@ async def google_auth(
         if not user_info:
             raise AuthenticationError("Google OAuth failed - no user info received")
         
-        # Authenticate or register user - this returns a Token object
-        jwt_token = service.google_authenticate_user(db, user_info, settings)
-       
-        
-        # Extract user info from the user_info dict we already have
+        # Extract user info from the user_info dict
         user_email = user_info.get("email", "")
-        is_new_user = False  # We'll need to determine this differently
         
-        # Check if user exists to determine if it's a new user
+        # Check if user exists BEFORE calling the authentication service
         existing_user = db.query(User).filter(User.email == user_email).first()
         is_new_user = existing_user is None
+        
+        # Authenticate or register user - this returns a Token object
+        jwt_token = service.google_authenticate_user(db, user_info, settings)
         
         # Create response with redirect to frontend
         # Redirect to different pages based on whether it's a new user
@@ -137,17 +135,14 @@ async def google_auth(
         
     except AuthenticationError as e:
         # Redirect to frontend with error
-        error_param = urllib.parse.quote(str(e.detail))
-        redirect_url = f"{settings.frontend_url}/?error={error_param}"
+        redirect_url = f"{settings.frontend_url}/?error=404"
         return RedirectResponse(url=redirect_url)
         
     except Exception as e:
         print(f"Google OAuth error: {str(e)}")
         # Redirect to frontend with error
-        error_param = urllib.parse.quote("Google OAuth failed")
-        redirect_url = f"{settings.frontend_url}/?error={error_param}"
+        redirect_url = f"{settings.frontend_url}/?error=401"
         return RedirectResponse(url=redirect_url)
-
 
 @router.get("/me", response_model=models.UserResponse)
 async def get_current_user_info(current_user: service.CurrentUser, db: DbSession):
@@ -175,29 +170,79 @@ async def get_current_user_info(current_user: service.CurrentUser, db: DbSession
 
 
 @router.post("/logout")
-async def logout():
-    """Logout endpoint - clears HttpOnly cookies."""
-    response = JSONResponse(content={"message": "Successfully logged out"})
-    
-    # Clear the JWT token cookie
-    response.delete_cookie(
-        key="access_token",
-        path="/"
-    )
-    
-    # Clear the user email cookie
-    response.delete_cookie(
-        key="user_email",
-        path="/"
-    )
-    
-    # Clear the user type cookie
-    response.delete_cookie(
-        key="user_type",
-        path="/"
-    )
-    
-    return response
+async def logout(request: Request, db: DbSession, settings: Annotated[Settings, Depends(get_settings)]):
+    """Logout endpoint - revokes refresh token and clears all cookies."""
+    try:
+        # Get refresh token from cookie
+        refresh_token = request.cookies.get("refresh_token")
+        
+        # Revoke refresh token if it exists
+        if refresh_token:
+            service.revoke_refresh_token(refresh_token, db)
+        
+        # Create response
+        response = JSONResponse(content={"message": "Successfully logged out"})
+        
+        # Clear all auth cookies with proper settings
+        response.delete_cookie(
+            key="access_token",
+            path="/",
+            secure=settings.is_production,
+            httponly=True,
+            samesite="lax"
+        )
+        
+        response.delete_cookie(
+            key="refresh_token",
+            path="/",
+            secure=settings.is_production,
+            httponly=True,
+            samesite="lax"
+        )
+        
+        response.delete_cookie(
+            key="user_email",
+            path="/",
+            secure=settings.is_production,
+            httponly=False,
+            samesite="lax"
+        )
+        
+        response.delete_cookie(
+            key="user_type",
+            path="/",
+            secure=settings.is_production,
+            httponly=False,
+            samesite="lax"
+        )
+        
+        return response
+        
+    except Exception as e:
+        # Even if revocation fails, still clear cookies
+        response = JSONResponse(content={"message": "Logged out (some cleanup failed)"})
+        
+        # Clear cookies anyway
+        response.delete_cookie(key="access_token", path="/")
+        response.delete_cookie(key="refresh_token", path="/")
+        response.delete_cookie(key="user_email", path="/")
+        response.delete_cookie(key="user_type", path="/")
+        
+        return response
+
+
+@router.put("/change-password", status_code=status.HTTP_200_OK)
+async def change_password(
+    password_change: models.PasswordChange,
+    db: DbSession,
+    current_user: service.CurrentUser
+):
+    """Change user password. Requires authentication."""
+    try:
+        service.change_password(db, current_user.get_uuid(), password_change)
+        return {"message": "Password changed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 

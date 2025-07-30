@@ -57,3 +57,9 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: str  # ISO format string
     updated_at: str  # ISO format string
+
+class PasswordChange(BaseModel):
+    """Model for password change requests."""
+    current_password: str
+    new_password: str
+    new_password_confirm: str

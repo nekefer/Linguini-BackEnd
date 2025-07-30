@@ -78,8 +78,14 @@ def hash_token(token: str) -> str:
 
 
 def store_refresh_token(db: Session, user_id: UUID, token: str, expires_at: datetime) -> None:
-    """Store refresh token hash in database for revocation tracking."""
     token_hash = hash_token(token)
+    
+    # Revoke any existing tokens for this user
+    db.query(RefreshToken).filter(
+        RefreshToken.user_id == user_id,
+        RefreshToken.is_revoked == False
+    ).update({"is_revoked": True})
+    
     refresh_token = RefreshToken(
         token_hash=token_hash,
         user_id=user_id,
@@ -280,3 +286,27 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings) -
         logging.info(f"Registered new user via Google OAuth: {email}")
 
     return create_token_pair(user, settings, db)  # Use token pair instead of single token
+
+
+def change_password(db: Session, user_id: UUID, password_change: models.PasswordChange) -> None:
+    """Change user password with validation."""
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise AuthenticationError("User not found")
+        
+        # Verify current password
+        if not verify_password(password_change.current_password, user.password_hash):
+            raise AuthenticationError("Invalid current password")
+        
+        # Verify new passwords match
+        if password_change.new_password != password_change.new_password_confirm:
+            raise AuthenticationError("New passwords do not match")
+        
+        # Update password
+        user.password_hash = get_password_hash(password_change.new_password)
+        db.commit()
+        logging.info(f"Successfully changed password for user ID: {user_id}")
+    except Exception as e:
+        logging.error(f"Error during password change for user ID: {user_id}. Error: {str(e)}")
+        raise
