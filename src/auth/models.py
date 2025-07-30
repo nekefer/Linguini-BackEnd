@@ -30,10 +30,16 @@ class RegisterUserRequest(BaseModel):
 
 class Token(BaseModel):
     access_token: str
-    token_type: str
+    refresh_token: str  # Add refresh token
+    token_type: str = "bearer"
+    expires_in: int  # Add expiration time in seconds
+    
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
     
 class TokenData(BaseModel):
     user_id: str | None = None
+    token_type: str = "access"  # "access" or "refresh"
 
     def get_uuid(self) -> UUID | None:
         if self.user_id:

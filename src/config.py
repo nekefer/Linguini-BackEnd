@@ -24,6 +24,7 @@ class AuthSettings(BaseModel):
     jwt_secret_key: str = Field(..., description="JWT signing secret key")
     algorithm: str = Field(default="HS256", description="JWT algorithm")
     access_token_expire_minutes: int = Field(default=30, description="JWT token expiration time in minutes")
+    refresh_token_expire_days: int = Field(default=30, description="Refresh token expiration time in days")
     
     @field_validator('secret_key')
     @classmethod
@@ -99,6 +100,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = Field(..., alias="JWT_SECRET_KEY")
     algorithm: str = Field(default="HS256", alias="ALGORITHM")
     access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+    refresh_token_expire_days: int = Field(default=30, alias="REFRESH_TOKEN_EXPIRE_DAYS")
     
     # Google OAuth settings
     google_client_id: str = Field(..., alias="GOOGLE_CLIENT_ID")
@@ -133,7 +135,8 @@ class Settings(BaseSettings):
             secret_key=self.secret_key,
             jwt_secret_key=self.jwt_secret_key,
             algorithm=self.algorithm,
-            access_token_expire_minutes=self.access_token_expire_minutes
+            access_token_expire_minutes=self.access_token_expire_minutes,
+            refresh_token_expire_days=self.refresh_token_expire_days
         )
     
     @property

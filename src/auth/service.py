@@ -1,19 +1,20 @@
 from datetime import timedelta, datetime, timezone
 from typing import Annotated
 from uuid import UUID, uuid4
-from fastapi import Depends
+from fastapi import Depends, Request
 from passlib.context import CryptContext
 import jwt
 from jwt import PyJWTError
 from sqlalchemy.orm import Session
 from src.entities.user import User
+from src.entities.refresh_token import RefreshToken
 from . import models
-from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordRequestForm
 from ..exceptions import AuthenticationError
 from ..config import get_settings, Settings
 import logging
+import hashlib  # For token hashing - faster than bcrypt for frequent verification
 
-oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
 
 
@@ -53,6 +54,125 @@ def create_access_token(email: str, user_id: UUID, expires_delta: timedelta, sec
     return jwt.encode(encode, secret_key, algorithm=algorithm)
 
 
+def create_refresh_token(user_id: UUID, expires_delta: timedelta, secret_key: str, algorithm: str) -> str:
+    """Create a refresh token with longer expiration."""
+    encode = {
+        'sub': str(user_id),
+        'type': 'refresh',  # Distinguish from access tokens
+        'exp': datetime.now(timezone.utc) + expires_delta
+    }
+    return jwt.encode(encode, secret_key, algorithm=algorithm)
+
+
+def hash_token(token: str) -> str:
+    """
+    Hash a token for secure storage in database.
+    
+    We use SHA-256 instead of bcrypt because:
+    - Tokens are verified frequently (every API call)
+    - SHA-256 is fast and deterministic
+    - bcrypt is slow by design (good for passwords, bad for performance)
+    - Token security relies on JWT signature, not hash strength
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def store_refresh_token(db: Session, user_id: UUID, token: str, expires_at: datetime) -> None:
+    """Store refresh token hash in database for revocation tracking."""
+    token_hash = hash_token(token)
+    refresh_token = RefreshToken(
+        token_hash=token_hash,
+        user_id=user_id,
+        expires_at=expires_at
+    )
+    db.add(refresh_token)
+    db.commit()
+
+
+def verify_refresh_token(token: str, db: Session, settings: Settings) -> models.TokenData:
+    """
+    Verify refresh token and return user data.
+    
+    Checks:
+    1. JWT signature and expiration
+    2. Token type is 'refresh'
+    3. Token hash exists in database
+    4. Token is not revoked
+    5. Token has not expired in database
+    """
+    try:
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.algorithm])
+        
+        if payload.get('type') != 'refresh':
+            raise AuthenticationError("Invalid token type")
+        
+        user_id = payload.get('sub')
+        if not user_id:
+            raise AuthenticationError("Invalid refresh token")
+        
+        # Check if token exists in database and is not revoked
+        token_hash = hash_token(token)
+        db_token = db.query(RefreshToken).filter(
+            RefreshToken.token_hash == token_hash,
+            RefreshToken.is_revoked == False,
+            RefreshToken.expires_at > datetime.now(timezone.utc)
+        ).first()
+        
+        if not db_token:
+            raise AuthenticationError("Invalid or expired refresh token")
+        
+        return models.TokenData(user_id=user_id, token_type="refresh")
+        
+    except PyJWTError as e:
+        logging.warning(f"Refresh token verification failed: {str(e)}")
+        raise AuthenticationError("Invalid refresh token")
+
+
+def revoke_refresh_token(token: str, db: Session) -> None:
+    """Revoke a refresh token by marking it as revoked in database."""
+    token_hash = hash_token(token)
+    db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
+    if db_token:
+        db_token.is_revoked = True
+        db.commit()
+
+
+def create_token_pair(user: User, settings: Settings, db: Session) -> models.Token:
+    """
+    Create both access and refresh tokens.
+    
+    Access token: Short-lived (30 minutes) for API calls
+    Refresh token: Long-lived (30 days) for getting new access tokens
+    """
+    # Create access token (short-lived)
+    access_token = create_access_token(
+        user.email, 
+        user.id, 
+        timedelta(minutes=settings.access_token_expire_minutes), 
+        settings.jwt_secret_key, 
+        settings.algorithm
+    )
+    
+    # Create refresh token (long-lived)
+    refresh_expires = timedelta(days=settings.refresh_token_expire_days)
+    refresh_token = create_refresh_token(
+        user.id, 
+        refresh_expires, 
+        settings.jwt_secret_key, 
+        settings.algorithm
+    )
+    
+    # Store refresh token hash for revocation tracking
+    expires_at = datetime.now(timezone.utc) + refresh_expires
+    store_refresh_token(db, user.id, refresh_token, expires_at)
+    
+    return models.Token(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=settings.access_token_expire_minutes * 60
+    )
+
+
 def verify_token(token: str, secret_key: str, algorithm: str) -> models.TokenData:
     try:
         payload = jwt.decode(token, secret_key, algorithms=[algorithm])
@@ -82,27 +202,32 @@ def register_user(db: Session, register_user_request: models.RegisterUserRequest
         db.rollback()  # Rollback on error to prevent partial data
         logging.error(f"Failed to register user: {register_user_request.email}. Error: {str(e)}")
         raise AuthenticationError(f"Registration failed: {str(e)}")
+
+
+def get_current_user_from_cookie(request: Request, settings: Annotated[Settings, Depends(get_settings)]) -> models.TokenData:
+    """Get current user from HttpOnly cookie instead of Authorization header."""
+    token = request.cookies.get("access_token")
+    if not token:
+        raise AuthenticationError("No access token found in cookies")
     
-    
-def get_current_user(token: Annotated[str, Depends(oauth2_bearer)],  settings: Annotated[Settings, Depends(get_settings)]) -> models.TokenData:
     return verify_token(token, settings.jwt_secret_key, settings.algorithm)
 
-CurrentUser = Annotated[models.TokenData, Depends(get_current_user)]
+# Cookie-based authentication for all endpoints
+CurrentUser = Annotated[models.TokenData, Depends(get_current_user_from_cookie)]
 
 
 def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-                                 db: Session, settings=None) -> models.Token:
+                                 db: Session, settings: Settings) -> models.Token:
     user = authenticate_user(form_data.username, form_data.password, db)
     if not user:
         raise AuthenticationError()
-    token = create_access_token(user.email, user.id, timedelta(minutes=settings.access_token_expire_minutes), settings.jwt_secret_key, settings.algorithm)
-    return models.Token(access_token=token, token_type='bearer')
+    return create_token_pair(user, settings, db)  # Use token pair instead of single token
 
 
-def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
+def google_authenticate_user(db: Session, user_info: dict, settings: Settings) -> models.Token:
     """
     Authenticate or register a user using Google OAuth info.
-    Returns a dict with token, user info, and whether it's a new registration.
+    Returns a Token object with both access and refresh tokens.
     """
     email = user_info.get("email")
     first_name = user_info.get("given_name", "")
@@ -115,11 +240,9 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
         raise AuthenticationError("Google OAuth did not return an email.")
 
     user = db.query(User).filter(User.email == email).first()
-    is_new_user = False
     
     if user:
         # Existing user - Login
-        # Only allow Google login if user has a google_id or auth_method allows Google
         if not user.google_id and user.auth_method not in ('google', 'both'):
             logging.warning(f"User {email} attempted Google login but is not authorized for Google login.")
             raise AuthenticationError("Google login not enabled for this user.")
@@ -141,7 +264,6 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
         logging.info(f"Authenticated existing user via Google OAuth: {email}")
     else:
         # New user - Registration
-        is_new_user = True
         user = User(
             id=uuid4(),
             email=email,
@@ -157,5 +279,4 @@ def google_authenticate_user(db: Session, user_info: dict, settings) -> dict:
         db.refresh(user)
         logging.info(f"Registered new user via Google OAuth: {email}")
 
-    token = create_access_token(user.email, user.id, timedelta(minutes=settings.access_token_expire_minutes), settings.jwt_secret_key, settings.algorithm)
-    return models.Token(access_token=token, token_type='bearer')
+    return create_token_pair(user, settings, db)  # Use token pair instead of single token
