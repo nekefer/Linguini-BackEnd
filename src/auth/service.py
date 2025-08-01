@@ -56,10 +56,15 @@ def create_access_token(email: str, user_id: UUID, expires_delta: timedelta, sec
 
 def create_refresh_token(user_id: UUID, expires_delta: timedelta, secret_key: str, algorithm: str) -> str:
     """Create a refresh token with longer expiration."""
+    # Add entropy to prevent identical tokens
+    import secrets
+    entropy = secrets.token_hex(8)  # 16 characters of randomness
+    
     encode = {
         'sub': str(user_id),
         'type': 'refresh',  # Distinguish from access tokens
-        'exp': datetime.now(timezone.utc) + expires_delta
+        'exp': datetime.now(timezone.utc) + expires_delta,
+        'entropy': entropy  # ✅ Ensures unique tokens even for same user
     }
     return jwt.encode(encode, secret_key, algorithm=algorithm)
 
@@ -78,21 +83,38 @@ def hash_token(token: str) -> str:
 
 
 def store_refresh_token(db: Session, user_id: UUID, token: str, expires_at: datetime) -> None:
+    """Store refresh token with collision handling."""
     token_hash = hash_token(token)
     
-    # Revoke any existing tokens for this user
-    db.query(RefreshToken).filter(
-        RefreshToken.user_id == user_id,
-        RefreshToken.is_revoked == False
-    ).update({"is_revoked": True})
-    
-    refresh_token = RefreshToken(
-        token_hash=token_hash,
-        user_id=user_id,
-        expires_at=expires_at
-    )
-    db.add(refresh_token)
-    db.commit()
+    try:
+        # Revoke any existing tokens for this user
+        revoked_count = db.query(RefreshToken).filter(
+            RefreshToken.user_id == user_id,
+            RefreshToken.is_revoked == False
+        ).update({"is_revoked": True})
+        
+        if revoked_count > 0:
+            logging.info(f"Revoked {revoked_count} existing tokens for user: {user_id}")
+        
+        # Check if this exact token hash already exists (edge case)
+        existing = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
+        if existing:
+            logging.warning(f"Token hash collision detected for user {user_id}, skipping...")
+            return  # Skip creating duplicate token
+        
+        # Create new refresh token
+        refresh_token = RefreshToken(
+            token_hash=token_hash,
+            user_id=user_id,
+            expires_at=expires_at
+        )
+        db.add(refresh_token)
+        db.commit()
+        
+    except Exception as e:
+        logging.error(f"Failed to store refresh token for user {user_id}: {str(e)}")
+        db.rollback()
+        raise
 
 
 def verify_refresh_token(token: str, db: Session, settings: Settings) -> models.TokenData:
@@ -310,3 +332,17 @@ def change_password(db: Session, user_id: UUID, password_change: models.Password
     except Exception as e:
         logging.error(f"Error during password change for user ID: {user_id}. Error: {str(e)}")
         raise
+
+
+def refresh_token_pair(refresh_token: str, db: Session, settings: Settings) -> models.Token:
+    """Create new token pair using refresh token."""
+    # Verify refresh token
+    token_data = verify_refresh_token(refresh_token, db, settings)
+    
+    # Get user
+    user = db.query(User).filter(User.id == token_data.get_uuid()).first()
+    if not user:
+        raise AuthenticationError("User not found")
+    
+    # Create new token pair
+    return create_token_pair(user, settings, db)

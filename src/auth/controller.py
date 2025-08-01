@@ -9,11 +9,12 @@ from fastapi.security import OAuth2PasswordRequestForm
 from ..database.core import DbSession
 from ..rate_limiter import limiter
 from ..exceptions import AuthenticationError
-from ..users.service import get_user_by_id
 from .google.oauth_config import oauth  # fixed import
 from ..config import get_settings, Settings
 from ..entities.user import User
 import urllib.parse
+import logging
+from sqlalchemy.orm import Session
 
 router = APIRouter(
     prefix='/auth',
@@ -34,23 +35,36 @@ async def login_for_access_token(
     db: DbSession,
     settings: Annotated[Settings, Depends(get_settings)]
 ):
-    """Login endpoint that also sets HttpOnly cookies for consistency."""
+    """Login endpoint that sets both access and refresh tokens."""
     token_data = service.login_for_access_token(form_data, db, settings)
     
     # Create response with token data
     response = JSONResponse(content={
         "access_token": token_data.access_token,
-        "token_type": token_data.token_type
+        "refresh_token": token_data.refresh_token,  # ✅ Add refresh token
+        "token_type": token_data.token_type,
+        "expires_in": token_data.expires_in
     })
     
-    # Set JWT token in HttpOnly cookie for consistency
+    # Set both JWT tokens in HttpOnly cookies
     response.set_cookie(
         key="access_token",
         value=token_data.access_token,
         httponly=True,
-        secure=False,  # Set to True in production with HTTPS
+        secure=settings.is_production,
         samesite="lax",
-        max_age=3600,  # 1 hour
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/"
+    )
+    
+    # ✅ Add refresh token cookie
+    response.set_cookie(
+        key="refresh_token",
+        value=token_data.refresh_token,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+        max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
         path="/"
     )
     
@@ -58,9 +72,16 @@ async def login_for_access_token(
 
 @router.get("/google/login")
 async def google_login(request: Request):
+    """Redirect to Google OAuth with intent parameter."""
     redirect_uri = request.url_for('google_auth')
-    # print("LOGIN COOKIES:", request.cookies)
-    return await oauth.google.authorize_redirect(request, redirect_uri=redirect_uri)
+    
+    # Get intent from query parameter (login or register)
+    intent = request.query_params.get("intent", "login")
+    
+    # Create state parameter with intent
+    state = f"intent={intent}"
+    
+    return await oauth.google.authorize_redirect(request, redirect_uri=redirect_uri, state=state)
 
 
 # Handle the OAuth callback from Google
@@ -86,13 +107,36 @@ async def google_auth(
         existing_user = db.query(User).filter(User.email == user_email).first()
         is_new_user = existing_user is None
         
-        # Authenticate or register user - this returns a Token object
+        # Get the intent from the state parameter (login vs register)
+        state = request.query_params.get("state", "")
+        intent = "login"  # Default to login
+        
+        # Extract intent from state if available
+        if "intent=" in state:
+            try:
+                intent = state.split("intent=")[1].split("&")[0]
+            except:
+                intent = "login"
+        
+        # Handle the case where user exists but is trying to register
+        if existing_user and intent == "register":
+            # User already exists, redirect to login page with error
+            error_url = f"{settings.frontend_url}/login?error=user_exists"
+            return RedirectResponse(url=error_url)
+        
+        # Handle the case where user doesn't exist but is trying to login
+        if not existing_user and intent == "login":
+            # User doesn't exist, redirect to register page with error
+            error_url = f"{settings.frontend_url}/register?error=user_not_found"
+            return RedirectResponse(url=error_url)
+        
+        # Now proceed with authentication/registration
         jwt_token = service.google_authenticate_user(db, user_info, settings)
         
         # Create response with redirect to frontend
         # Redirect to different pages based on whether it's a new user
         if is_new_user:
-            redirect_url = f"{settings.frontend_url}/welcome"  # Welcome page for new users
+            redirect_url = f"{settings.frontend_url}/"  # Root page for new users
         else:
             redirect_url = f"{settings.frontend_url}/dashboard"  # Dashboard for existing users
         
@@ -106,6 +150,17 @@ async def google_auth(
             secure=settings.is_production,  # Use secure cookies in production
             samesite="lax",
             max_age=3600,  # 1 hour
+            path="/"
+        )
+        
+        # ✅ Add refresh token cookie
+        response.set_cookie(
+            key="refresh_token",
+            value=jwt_token.refresh_token,  # ✅ Add this
+            httponly=True,
+            secure=settings.is_production,
+            samesite="lax",
+            max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
             path="/"
         )
         
@@ -133,16 +188,11 @@ async def google_auth(
         
         return response
         
-    except AuthenticationError as e:
-        # Redirect to frontend with error
-        redirect_url = f"{settings.frontend_url}/?error=404"
-        return RedirectResponse(url=redirect_url)
-        
     except Exception as e:
-        print(f"Google OAuth error: {str(e)}")
-        # Redirect to frontend with error
-        redirect_url = f"{settings.frontend_url}/?error=401"
-        return RedirectResponse(url=redirect_url)
+        logging.error(f"Google OAuth error: {str(e)}")
+        error_url = f"{settings.frontend_url}/?error=oauth_failed"
+        return RedirectResponse(url=error_url)
+
 
 @router.get("/me", response_model=models.UserResponse)
 async def get_current_user_info(current_user: service.CurrentUser, db: DbSession):
@@ -152,7 +202,11 @@ async def get_current_user_info(current_user: service.CurrentUser, db: DbSession
         if not user_id:
             raise AuthenticationError("Invalid user token")
         
-        user = get_user_by_id(db, user_id)
+        # ✅ Replace the broken function call with direct database query
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
         
         return models.UserResponse(
             id=user.id,
@@ -244,6 +298,55 @@ async def change_password(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+@router.post("/refresh")
+async def refresh_tokens(
+    request: Request,
+    db: DbSession,
+    settings: Annotated[Settings, Depends(get_settings)]
+):
+    """Refresh access token using refresh token."""
+    try:
+        refresh_token = request.cookies.get("refresh_token")
+        if not refresh_token:
+            raise HTTPException(status_code=401, detail="No refresh token provided")
+        
+        # Verify refresh token and get new token pair
+        new_tokens = service.refresh_token_pair(refresh_token, db, settings)
+        
+        # Create response
+        response = JSONResponse(content={
+            "access_token": new_tokens.access_token,
+            "refresh_token": new_tokens.refresh_token,
+            "token_type": new_tokens.token_type,
+            "expires_in": new_tokens.expires_in
+        })
+        
+        # Set new cookies
+        response.set_cookie(
+            key="access_token",
+            value=new_tokens.access_token,
+            httponly=True,
+            secure=settings.is_production,
+            samesite="lax",
+            max_age=settings.access_token_expire_minutes * 60,
+            path="/"
+        )
+        
+        response.set_cookie(
+            key="refresh_token",
+            value=new_tokens.refresh_token,
+            httponly=True,
+            secure=settings.is_production,
+            samesite="lax",
+            max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
+            path="/"
+        )
+        
+        return response
+        
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
 
