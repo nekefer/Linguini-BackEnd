@@ -349,6 +349,12 @@ async def refresh_tokens(
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
+@router.get("/google/client-id")
+async def get_google_client_id(settings: Annotated[Settings, Depends(get_settings)]):
+    """Get Google OAuth client ID for frontend initialization."""
+    return {"client_id": settings.google_client_id}
+
+
 
 
 
