@@ -23,9 +23,67 @@ router = APIRouter(
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/hour")
-async def register_user(request: Request, db: DbSession,
-                      register_user_request: models.RegisterUserRequest):
+async def register_user(
+    request: Request, 
+    db: DbSession,
+    register_user_request: models.RegisterUserRequest,
+    settings: Annotated[Settings, Depends(get_settings)]
+):
+    """Register user and automatically log them in by setting auth cookies."""
+    # Create the user
     service.register_user(db, register_user_request)
+    
+    # Automatically log them in after registration
+    user = db.query(User).filter(User.email == register_user_request.email).first()
+    if not user:
+        raise AuthenticationError("User creation failed")
+    
+    # Create token pair for the new user
+    jwt_token = service.create_token_pair(user, settings, db)
+    
+    # Create response with success message
+    response = JSONResponse(content={
+        "message": "User registered and logged in successfully",
+        "user": {
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name
+        }
+    })
+    
+    # Set authentication cookies
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token.access_token,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/"
+    )
+    
+    response.set_cookie(
+        key="refresh_token",
+        value=jwt_token.refresh_token,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+        max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
+        path="/"
+    )
+    
+    # Set user info cookie for frontend
+    response.set_cookie(
+        key="user_email",
+        value=user.email,
+        httponly=False,
+        secure=settings.is_production,
+        samesite="lax",
+        max_age=24 * 60 * 60,  # 24 hours
+        path="/"
+    )
+    
+    return response
 
 
 @router.post("/token", response_model=models.Token)
