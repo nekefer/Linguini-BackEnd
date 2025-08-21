@@ -72,14 +72,12 @@ async def login_for_access_token(
 
 @router.get("/google/login")
 async def google_login(request: Request):
-    """Redirect to Google OAuth with intent parameter."""
+    """🎯 Unified Google OAuth - handles both registration and login automatically."""
     redirect_uri = request.url_for('google_auth')
     
-    # Get intent from query parameter (login or register)
-    intent = request.query_params.get("intent", "login")
-    
-    # Create state parameter with intent
-    state = f"intent={intent}"
+    # Simple state parameter for CSRF protection (no intent needed)
+    import secrets
+    state = secrets.token_urlsafe(32)
     
     return await oauth.google.authorize_redirect(request, redirect_uri=redirect_uri, state=state)
 
@@ -91,7 +89,12 @@ async def google_auth(
     db: DbSession,
     settings: Annotated[Settings, Depends(get_settings)]
 ):
-    """Handle Google OAuth callback and set JWT token in HttpOnly cookie."""
+    """
+    🎯 Unified Google OAuth callback - automatically handles registration and login.
+    No matter which page the user came from, this will:
+    - Create account if user doesn't exist
+    - Log in if user already exists
+    """
     try:
         # Get token from Google
         token = await oauth.google.authorize_access_token(request)
@@ -103,42 +106,22 @@ async def google_auth(
         # Extract user info from the user_info dict
         user_email = user_info.get("email", "")
         
-        # Check if user exists BEFORE calling the authentication service
+        # 🎯 UNIFIED GOOGLE OAUTH APPROACH
+        # No matter if they came from login or register page:
+        # - If user exists → Log them in
+        # - If user doesn't exist → Create account and log them in
+        # This eliminates confusing error messages!
+        
+        # Check if user exists
         existing_user = db.query(User).filter(User.email == user_email).first()
         is_new_user = existing_user is None
         
-        # Get the intent from the state parameter (login vs register)
-        state = request.query_params.get("state", "")
-        intent = "login"  # Default to login
-        
-        # Extract intent from state if available
-        if "intent=" in state:
-            try:
-                intent = state.split("intent=")[1].split("&")[0]
-            except:
-                intent = "login"
-        
-        # Handle the case where user exists but is trying to register
-        if existing_user and intent == "register":
-            # User already exists, redirect to login page with error
-            error_url = f"{settings.frontend_url}/login?error=user_exists"
-            return RedirectResponse(url=error_url)
-        
-        # Handle the case where user doesn't exist but is trying to login
-        if not existing_user and intent == "login":
-            # User doesn't exist, redirect to register page with error
-            error_url = f"{settings.frontend_url}/register?error=user_not_found"
-            return RedirectResponse(url=error_url)
-        
-        # Now proceed with authentication/registration
+        # Always proceed with authentication/registration - no intent checking!
         jwt_token = service.google_authenticate_user(db, user_info, settings)
         
         # Create response with redirect to frontend
-        # Redirect to different pages based on whether it's a new user
-        if is_new_user:
-            redirect_url = f"{settings.frontend_url}/"  # Root page for new users
-        else:
-            redirect_url = f"{settings.frontend_url}/dashboard"  # Dashboard for existing users
+        # Always redirect to dashboard for seamless experience
+        redirect_url = f"{settings.frontend_url}/dashboard"
         
         response = RedirectResponse(url=redirect_url)
         
