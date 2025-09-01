@@ -266,14 +266,9 @@ async def get_current_user_info(current_user: service.CurrentUser, db: DbSession
 
 @router.post("/logout")
 async def logout(request: Request, db: DbSession, settings: Annotated[Settings, Depends(get_settings)]):
-    """Logout endpoint - revokes refresh token and clears all cookies."""
+    """✅ UPDATED: Logout endpoint - clears cookies (no database operations needed)."""
     try:
-        # Get refresh token from cookie
-        refresh_token = request.cookies.get("refresh_token")
-        
-        # Revoke refresh token if it exists
-        if refresh_token:
-            service.revoke_refresh_token(refresh_token, db)
+        # ✅ NO MORE DATABASE OPERATIONS - tokens are stateless
         
         # Create response
         response = JSONResponse(content={"message": "Successfully logged out"})
@@ -346,13 +341,13 @@ async def refresh_tokens(
     db: DbSession,
     settings: Annotated[Settings, Depends(get_settings)]
 ):
-    """Refresh access token using refresh token."""
+    """✅ UPDATED: Refresh access token using refresh token (stateless)."""
     try:
         refresh_token = request.cookies.get("refresh_token")
         if not refresh_token:
             raise HTTPException(status_code=401, detail="No refresh token provided")
         
-        # Verify refresh token and get new token pair
+        # ✅ Verify refresh token and get new token pair (no database lookup for token validation)
         new_tokens = service.refresh_token_pair(refresh_token, db, settings)
         
         # Create response
