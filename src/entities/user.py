@@ -1,6 +1,5 @@
 from sqlalchemy import Column, String, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
 from ..database.core import Base 
@@ -19,9 +18,6 @@ class User(Base):
     is_active = Column(Boolean, default=True)      # Track if user account is active
     created_at = Column(DateTime, default=datetime.utcnow)  # When user was created
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # Last update time
-
-    # Add this line for the relationship
-    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(email='{self.email}', first_name='{self.first_name}', last_name='{self.last_name}', auth_method='{self.auth_method}')>"

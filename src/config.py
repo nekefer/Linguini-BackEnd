@@ -21,16 +21,17 @@ class DatabaseSettings(BaseModel):
 class AuthSettings(BaseModel):
     """Authentication and JWT configuration settings"""
     secret_key: str = Field(..., min_length=32, description="Application secret key for sessions")
-    jwt_secret_key: str = Field(..., description="JWT signing secret key")
+    jwt_secret_key: str = Field(..., min_length=32, description="JWT signing secret key")
+    session_secret_key: str = Field(..., min_length=32, description="Session middleware secret key")
     algorithm: str = Field(default="HS256", description="JWT algorithm")
     access_token_expire_minutes: int = Field(default=30, description="JWT token expiration time in minutes")
     refresh_token_expire_days: int = Field(default=30, description="Refresh token expiration time in days")
     
-    @field_validator('secret_key')
+    @field_validator('secret_key', 'jwt_secret_key', 'session_secret_key')
     @classmethod
-    def validate_secret_key(cls, v):
+    def validate_secret_keys(cls, v):
         if len(v) < 32:
-            raise ValueError("SECRET_KEY must be at least 32 characters long for security")
+            raise ValueError("Secret keys must be at least 32 characters long for security")
         return v
 
 
@@ -98,6 +99,7 @@ class Settings(BaseSettings):
     # Auth settings
     secret_key: str = Field(..., alias="SECRET_KEY")
     jwt_secret_key: str = Field(..., alias="JWT_SECRET_KEY")
+    session_secret_key: str = Field(..., alias="SESSION_SECRET_KEY")
     algorithm: str = Field(default="HS256", alias="ALGORITHM")
     access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(default=30, alias="REFRESH_TOKEN_EXPIRE_DAYS")
@@ -134,6 +136,7 @@ class Settings(BaseSettings):
         return AuthSettings(
             secret_key=self.secret_key,
             jwt_secret_key=self.jwt_secret_key,
+            session_secret_key=self.session_secret_key,
             algorithm=self.algorithm,
             access_token_expire_minutes=self.access_token_expire_minutes,
             refresh_token_expire_days=self.refresh_token_expire_days

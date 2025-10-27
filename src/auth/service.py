@@ -7,13 +7,12 @@ import jwt
 from jwt import PyJWTError
 from sqlalchemy.orm import Session
 from src.entities.user import User
-from src.entities.refresh_token import RefreshToken
+# ✅ REMOVED: from src.entities.refresh_token import RefreshToken
 from . import models
 from fastapi.security import OAuth2PasswordRequestForm
 from ..exceptions import AuthenticationError
 from ..config import get_settings, Settings
 import logging
-import hashlib  # For token hashing - faster than bcrypt for frequent verification
 
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
 
@@ -46,128 +45,62 @@ def authenticate_user(email: str, password: str, db: Session) -> User | bool:
 
 
 def create_access_token(email: str, user_id: UUID, expires_delta: timedelta, secret_key: str, algorithm: str) -> str:
+    """Create a short-lived access token for API calls."""
     encode = {
         'sub': email,
         'id': str(user_id),
-        'exp': datetime.now(timezone.utc) + expires_delta
+        'type': 'access',  # ✅ Added type for clarity
+        'exp': datetime.now(timezone.utc) + expires_delta,
+        'iat': datetime.now(timezone.utc)  # Issued at
     }
     return jwt.encode(encode, secret_key, algorithm=algorithm)
 
 
 def create_refresh_token(user_id: UUID, expires_delta: timedelta, secret_key: str, algorithm: str) -> str:
-    """Create a refresh token with longer expiration."""
-    # Add entropy to prevent identical tokens
-    import secrets
-    entropy = secrets.token_hex(8)  # 16 characters of randomness
-    
+    """✅ NEW: Create a stateless refresh token (no database storage)."""
     encode = {
-        'sub': str(user_id),
-        'type': 'refresh',  # Distinguish from access tokens
-        'exp': datetime.now(timezone.utc) + expires_delta,
-        'entropy': entropy  # ✅ Ensures unique tokens even for same user
+        'sub': str(user_id),        # User ID
+        'type': 'refresh',          # Token type (prevents using access tokens as refresh tokens)
+        'exp': datetime.now(timezone.utc) + expires_delta,  # Expiration time
+        'jti': str(uuid4()),        # JWT ID - unique identifier for this token
+        'iat': datetime.now(timezone.utc)  # Issued at timestamp
     }
     return jwt.encode(encode, secret_key, algorithm=algorithm)
 
 
-def hash_token(token: str) -> str:
-    """
-    Hash a token for secure storage in database.
-    
-    We use SHA-256 instead of bcrypt because:
-    - Tokens are verified frequently (every API call)
-    - SHA-256 is fast and deterministic
-    - bcrypt is slow by design (good for passwords, bad for performance)
-    - Token security relies on JWT signature, not hash strength
-    """
-    return hashlib.sha256(token.encode()).hexdigest()
+# ✅ REMOVED: All database-dependent functions
+# - hash_token()
+# - store_refresh_token()
+# - revoke_refresh_token()
 
 
-def store_refresh_token(db: Session, user_id: UUID, token: str, expires_at: datetime) -> None:
-    """Store refresh token with collision handling."""
-    token_hash = hash_token(token)
-    
+def verify_refresh_token(token: str, secret_key: str, algorithm: str) -> models.TokenData:
+    """✅ NEW: Verify refresh token without database lookup (stateless)."""
     try:
-        # Revoke any existing tokens for this user
-        revoked_count = db.query(RefreshToken).filter(
-            RefreshToken.user_id == user_id,
-            RefreshToken.is_revoked == False
-        ).update({"is_revoked": True})
+        # Decode and verify the JWT signature
+        payload = jwt.decode(token, secret_key, algorithms=[algorithm])
         
-        if revoked_count > 0:
-            logging.info(f"Revoked {revoked_count} existing tokens for user: {user_id}")
-        
-        # Check if this exact token hash already exists (edge case)
-        existing = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
-        if existing:
-            logging.warning(f"Token hash collision detected for user {user_id}, skipping...")
-            return  # Skip creating duplicate token
-        
-        # Create new refresh token
-        refresh_token = RefreshToken(
-            token_hash=token_hash,
-            user_id=user_id,
-            expires_at=expires_at
-        )
-        db.add(refresh_token)
-        db.commit()
-        
-    except Exception as e:
-        logging.error(f"Failed to store refresh token for user {user_id}: {str(e)}")
-        db.rollback()
-        raise
-
-
-def verify_refresh_token(token: str, db: Session, settings: Settings) -> models.TokenData:
-    """
-    Verify refresh token and return user data.
-    
-    Checks:
-    1. JWT signature and expiration
-    2. Token type is 'refresh'
-    3. Token hash exists in database
-    4. Token is not revoked
-    5. Token has not expired in database
-    """
-    try:
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.algorithm])
-        
+        # Check if it's actually a refresh token
         if payload.get('type') != 'refresh':
             raise AuthenticationError("Invalid token type")
         
+        # Extract user ID
         user_id = payload.get('sub')
         if not user_id:
             raise AuthenticationError("Invalid refresh token")
         
-        # Check if token exists in database and is not revoked
-        token_hash = hash_token(token)
-        db_token = db.query(RefreshToken).filter(
-            RefreshToken.token_hash == token_hash,
-            RefreshToken.is_revoked == False,
-            RefreshToken.expires_at > datetime.now(timezone.utc)
-        ).first()
-        
-        if not db_token:
-            raise AuthenticationError("Invalid or expired refresh token")
-        
+        # Return the user data
         return models.TokenData(user_id=user_id, token_type="refresh")
         
     except PyJWTError as e:
+        # JWT is invalid (expired, wrong signature, etc.)
         logging.warning(f"Refresh token verification failed: {str(e)}")
         raise AuthenticationError("Invalid refresh token")
 
 
-def revoke_refresh_token(token: str, db: Session) -> None:
-    """Revoke a refresh token by marking it as revoked in database."""
-    token_hash = hash_token(token)
-    db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
-    if db_token:
-        db_token.is_revoked = True
-        db.commit()
-
-
 def create_token_pair(user: User, settings: Settings, db: Session) -> models.Token:
     """
-    Create both access and refresh tokens.
+    ✅ UPDATED: Create both access and refresh tokens (stateless refresh tokens).
     
     Access token: Short-lived (30 minutes) for API calls
     Refresh token: Long-lived (30 days) for getting new access tokens
@@ -176,12 +109,12 @@ def create_token_pair(user: User, settings: Settings, db: Session) -> models.Tok
     access_token = create_access_token(
         user.email, 
         user.id, 
-        timedelta(minutes=settings.access_token_expire_minutes), 
+        timedelta(minutes=1), #1 minute is  for testing  the real time is 30 minutes from setting   
         settings.jwt_secret_key, 
         settings.algorithm
     )
     
-    # Create refresh token (long-lived)
+    # Create refresh token (long-lived) - NO DATABASE STORAGE
     refresh_expires = timedelta(days=settings.refresh_token_expire_days)
     refresh_token = create_refresh_token(
         user.id, 
@@ -190,9 +123,7 @@ def create_token_pair(user: User, settings: Settings, db: Session) -> models.Tok
         settings.algorithm
     )
     
-    # Store refresh token hash for revocation tracking
-    expires_at = datetime.now(timezone.utc) + refresh_expires
-    store_refresh_token(db, user.id, refresh_token, expires_at)
+    # ✅ NO MORE DATABASE STORAGE - tokens are stateless
     
     return models.Token(
         access_token=access_token,
@@ -202,13 +133,22 @@ def create_token_pair(user: User, settings: Settings, db: Session) -> models.Tok
 
 
 def verify_token(token: str, secret_key: str, algorithm: str) -> models.TokenData:
+    """Verify access token (stateless)."""
     try:
         payload = jwt.decode(token, secret_key, algorithms=[algorithm])
+        
+        # ✅ Added type validation for access tokens
+        if payload.get('type') != 'access':
+            raise AuthenticationError("Invalid token type")
+        
         user_id: str = payload.get('id')
+        if not user_id:
+            raise AuthenticationError("Invalid token")
+            
         return models.TokenData(user_id=user_id)
     except PyJWTError as e:
         logging.warning(f"Token verification failed: {str(e)}")
-        raise AuthenticationError()
+        raise AuthenticationError("Invalid token")
 
 
 def register_user(db: Session, register_user_request: models.RegisterUserRequest) -> None:
@@ -335,11 +275,11 @@ def change_password(db: Session, user_id: UUID, password_change: models.Password
 
 
 def refresh_token_pair(refresh_token: str, db: Session, settings: Settings) -> models.Token:
-    """Create new token pair using refresh token."""
-    # Verify refresh token
-    token_data = verify_refresh_token(refresh_token, db, settings)
+    """✅ UPDATED: Create new token pair using refresh token (stateless)."""
+    # Verify refresh token (no database needed)
+    token_data = verify_refresh_token(refresh_token, settings.jwt_secret_key, settings.algorithm)
     
-    # Get user
+    # Get user from database (only for user info)
     user = db.query(User).filter(User.id == token_data.get_uuid()).first()
     if not user:
         raise AuthenticationError("User not found")

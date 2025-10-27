@@ -23,12 +23,71 @@ router = APIRouter(
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/hour")
-async def register_user(request: Request, db: DbSession,
-                      register_user_request: models.RegisterUserRequest):
+async def register_user(
+    request: Request, 
+    db: DbSession,
+    register_user_request: models.RegisterUserRequest,
+    settings: Annotated[Settings, Depends(get_settings)]
+):
+    """Register user and automatically log them in by setting auth cookies."""
+    # Create the user
     service.register_user(db, register_user_request)
+    
+    # Automatically log them in after registration
+    user = db.query(User).filter(User.email == register_user_request.email).first()
+    if not user:
+        raise AuthenticationError("User creation failed")
+    
+    # Create token pair for the new user
+    jwt_token = service.create_token_pair(user, settings, db)
+    
+    # Create response with success message
+    response = JSONResponse(content={
+        "message": "User registered and logged in successfully",
+        "user": {
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name
+        }
+    })
+    
+    # Set authentication cookies
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token.access_token,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/"
+    )
+    
+    response.set_cookie(
+        key="refresh_token",
+        value=jwt_token.refresh_token,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+        max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
+        path="/"
+    )
+    
+    # Set user info cookie for frontend - SECURE VERSION
+    response.set_cookie(
+        key="user_email",
+        value=user.email,
+        httponly=True,  # ✅ Prevent XSS access
+        secure=settings.is_production,
+        samesite="strict",  # ✅ Better CSRF protection
+        max_age=24 * 60 * 60,  # 24 hours
+        path="/"
+    )
+    
+    return response
 
 
 @router.post("/token", response_model=models.Token)
+@limiter.limit("5/minute")  # ✅ Rate limiting for login attempts
 async def login_for_access_token(
     request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -72,14 +131,12 @@ async def login_for_access_token(
 
 @router.get("/google/login")
 async def google_login(request: Request):
-    """Redirect to Google OAuth with intent parameter."""
+    """🎯 Unified Google OAuth - handles both registration and login automatically."""
     redirect_uri = request.url_for('google_auth')
     
-    # Get intent from query parameter (login or register)
-    intent = request.query_params.get("intent", "login")
-    
-    # Create state parameter with intent
-    state = f"intent={intent}"
+    # Simple state parameter for CSRF protection (no intent needed)
+    import secrets
+    state = secrets.token_urlsafe(32)
     
     return await oauth.google.authorize_redirect(request, redirect_uri=redirect_uri, state=state)
 
@@ -91,7 +148,12 @@ async def google_auth(
     db: DbSession,
     settings: Annotated[Settings, Depends(get_settings)]
 ):
-    """Handle Google OAuth callback and set JWT token in HttpOnly cookie."""
+    """
+    🎯 Unified Google OAuth callback - automatically handles registration and login.
+    No matter which page the user came from, this will:
+    - Create account if user doesn't exist
+    - Log in if user already exists
+    """
     try:
         # Get token from Google
         token = await oauth.google.authorize_access_token(request)
@@ -103,42 +165,22 @@ async def google_auth(
         # Extract user info from the user_info dict
         user_email = user_info.get("email", "")
         
-        # Check if user exists BEFORE calling the authentication service
+        # 🎯 UNIFIED GOOGLE OAUTH APPROACH
+        # No matter if they came from login or register page:
+        # - If user exists → Log them in
+        # - If user doesn't exist → Create account and log them in
+        # This eliminates confusing error messages!
+        
+        # Check if user exists
         existing_user = db.query(User).filter(User.email == user_email).first()
         is_new_user = existing_user is None
         
-        # Get the intent from the state parameter (login vs register)
-        state = request.query_params.get("state", "")
-        intent = "login"  # Default to login
-        
-        # Extract intent from state if available
-        if "intent=" in state:
-            try:
-                intent = state.split("intent=")[1].split("&")[0]
-            except:
-                intent = "login"
-        
-        # Handle the case where user exists but is trying to register
-        if existing_user and intent == "register":
-            # User already exists, redirect to login page with error
-            error_url = f"{settings.frontend_url}/login?error=user_exists"
-            return RedirectResponse(url=error_url)
-        
-        # Handle the case where user doesn't exist but is trying to login
-        if not existing_user and intent == "login":
-            # User doesn't exist, redirect to register page with error
-            error_url = f"{settings.frontend_url}/register?error=user_not_found"
-            return RedirectResponse(url=error_url)
-        
-        # Now proceed with authentication/registration
+        # Always proceed with authentication/registration - no intent checking!
         jwt_token = service.google_authenticate_user(db, user_info, settings)
         
         # Create response with redirect to frontend
-        # Redirect to different pages based on whether it's a new user
-        if is_new_user:
-            redirect_url = f"{settings.frontend_url}/"  # Root page for new users
-        else:
-            redirect_url = f"{settings.frontend_url}/dashboard"  # Dashboard for existing users
+        # Always redirect to dashboard for seamless experience
+        redirect_url = f"{settings.frontend_url}/dashboard"
         
         response = RedirectResponse(url=redirect_url)
         
@@ -164,24 +206,24 @@ async def google_auth(
             path="/"
         )
         
-        # Set user info in a separate cookie
+        # Set user info in a separate cookie - SECURE VERSION
         response.set_cookie(
             key="user_email",
             value=user_email,
-            httponly=False,  # Allow JavaScript access for display
+            httponly=True,  # ✅ Prevent XSS access
             secure=settings.is_production,
-            samesite="lax",
+            samesite="strict",  # ✅ Better CSRF protection
             max_age=3600,
             path="/"
         )
         
-        # Set user type cookie (new vs existing)
+        # Set user type cookie (new vs existing) - SECURE VERSION
         response.set_cookie(
             key="user_type",
             value="new" if is_new_user else "existing",
-            httponly=False,
+            httponly=True,  # ✅ Prevent XSS access
             secure=settings.is_production,
-            samesite="lax",
+            samesite="strict",  # ✅ Better CSRF protection
             max_age=3600,
             path="/"
         )
@@ -195,7 +237,8 @@ async def google_auth(
 
 
 @router.get("/me", response_model=models.UserResponse)
-async def get_current_user_info(current_user: service.CurrentUser, db: DbSession):
+@limiter.limit("60/minute")  # ✅ Rate limiting for user info requests
+async def get_current_user_info(request: Request, current_user: service.CurrentUser, db: DbSession):
     """Get current user information."""
     try:
         user_id = current_user.get_uuid()
@@ -224,15 +267,11 @@ async def get_current_user_info(current_user: service.CurrentUser, db: DbSession
 
 
 @router.post("/logout")
+@limiter.limit("10/minute")  # ✅ Rate limiting for logout attempts
 async def logout(request: Request, db: DbSession, settings: Annotated[Settings, Depends(get_settings)]):
-    """Logout endpoint - revokes refresh token and clears all cookies."""
+    """✅ UPDATED: Logout endpoint - clears cookies (no database operations needed)."""
     try:
-        # Get refresh token from cookie
-        refresh_token = request.cookies.get("refresh_token")
-        
-        # Revoke refresh token if it exists
-        if refresh_token:
-            service.revoke_refresh_token(refresh_token, db)
+        # ✅ NO MORE DATABASE OPERATIONS - tokens are stateless
         
         # Create response
         response = JSONResponse(content={"message": "Successfully logged out"})
@@ -286,7 +325,9 @@ async def logout(request: Request, db: DbSession, settings: Annotated[Settings, 
 
 
 @router.put("/change-password", status_code=status.HTTP_200_OK)
+@limiter.limit("3/minute")  # ✅ Rate limiting for password changes (very restrictive)
 async def change_password(
+    request: Request,
     password_change: models.PasswordChange,
     db: DbSession,
     current_user: service.CurrentUser
@@ -300,18 +341,19 @@ async def change_password(
 
 
 @router.post("/refresh")
+@limiter.limit("10/minute")  # ✅ Rate limiting for token refresh
 async def refresh_tokens(
     request: Request,
     db: DbSession,
     settings: Annotated[Settings, Depends(get_settings)]
 ):
-    """Refresh access token using refresh token."""
+    """✅ UPDATED: Refresh access token using refresh token (stateless)."""
     try:
         refresh_token = request.cookies.get("refresh_token")
         if not refresh_token:
             raise HTTPException(status_code=401, detail="No refresh token provided")
         
-        # Verify refresh token and get new token pair
+        # ✅ Verify refresh token and get new token pair (no database lookup for token validation)
         new_tokens = service.refresh_token_pair(refresh_token, db, settings)
         
         # Create response
