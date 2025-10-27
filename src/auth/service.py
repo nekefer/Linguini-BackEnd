@@ -109,7 +109,7 @@ def create_token_pair(user: User, settings: Settings, db: Session) -> models.Tok
     access_token = create_access_token(
         user.email, 
         user.id, 
-        timedelta(minutes=1), 
+        timedelta(minutes=1), #1 minute is  for testing  the real time is 30 minutes from setting   
         settings.jwt_secret_key, 
         settings.algorithm
     )

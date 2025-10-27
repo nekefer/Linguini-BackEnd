@@ -72,13 +72,13 @@ async def register_user(
         path="/"
     )
     
-    # Set user info cookie for frontend
+    # Set user info cookie for frontend - SECURE VERSION
     response.set_cookie(
         key="user_email",
         value=user.email,
-        httponly=False,
+        httponly=True,  # ✅ Prevent XSS access
         secure=settings.is_production,
-        samesite="lax",
+        samesite="strict",  # ✅ Better CSRF protection
         max_age=24 * 60 * 60,  # 24 hours
         path="/"
     )
@@ -87,6 +87,7 @@ async def register_user(
 
 
 @router.post("/token", response_model=models.Token)
+@limiter.limit("5/minute")  # ✅ Rate limiting for login attempts
 async def login_for_access_token(
     request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -205,24 +206,24 @@ async def google_auth(
             path="/"
         )
         
-        # Set user info in a separate cookie
+        # Set user info in a separate cookie - SECURE VERSION
         response.set_cookie(
             key="user_email",
             value=user_email,
-            httponly=False,  # Allow JavaScript access for display
+            httponly=True,  # ✅ Prevent XSS access
             secure=settings.is_production,
-            samesite="lax",
+            samesite="strict",  # ✅ Better CSRF protection
             max_age=3600,
             path="/"
         )
         
-        # Set user type cookie (new vs existing)
+        # Set user type cookie (new vs existing) - SECURE VERSION
         response.set_cookie(
             key="user_type",
             value="new" if is_new_user else "existing",
-            httponly=False,
+            httponly=True,  # ✅ Prevent XSS access
             secure=settings.is_production,
-            samesite="lax",
+            samesite="strict",  # ✅ Better CSRF protection
             max_age=3600,
             path="/"
         )
@@ -236,7 +237,8 @@ async def google_auth(
 
 
 @router.get("/me", response_model=models.UserResponse)
-async def get_current_user_info(current_user: service.CurrentUser, db: DbSession):
+@limiter.limit("60/minute")  # ✅ Rate limiting for user info requests
+async def get_current_user_info(request: Request, current_user: service.CurrentUser, db: DbSession):
     """Get current user information."""
     try:
         user_id = current_user.get_uuid()
@@ -265,6 +267,7 @@ async def get_current_user_info(current_user: service.CurrentUser, db: DbSession
 
 
 @router.post("/logout")
+@limiter.limit("10/minute")  # ✅ Rate limiting for logout attempts
 async def logout(request: Request, db: DbSession, settings: Annotated[Settings, Depends(get_settings)]):
     """✅ UPDATED: Logout endpoint - clears cookies (no database operations needed)."""
     try:
@@ -322,7 +325,9 @@ async def logout(request: Request, db: DbSession, settings: Annotated[Settings, 
 
 
 @router.put("/change-password", status_code=status.HTTP_200_OK)
+@limiter.limit("3/minute")  # ✅ Rate limiting for password changes (very restrictive)
 async def change_password(
+    request: Request,
     password_change: models.PasswordChange,
     db: DbSession,
     current_user: service.CurrentUser
@@ -336,6 +341,7 @@ async def change_password(
 
 
 @router.post("/refresh")
+@limiter.limit("10/minute")  # ✅ Rate limiting for token refresh
 async def refresh_tokens(
     request: Request,
     db: DbSession,
