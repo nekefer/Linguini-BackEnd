@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Query, Depends, HTTPException
+from fastapi import APIRouter, Cookie, HTTPException
+from typing import Optional
 from .service import get_last_liked_video
 from .models import LikedVideo
 from ..auth.service import CurrentUser
-from ..database.core import DbSession
 
 router = APIRouter(
     prefix="/youtube",
@@ -11,16 +11,23 @@ router = APIRouter(
 
 @router.get("/last-liked-video", response_model=LikedVideo)
 async def last_liked_video(
-    current_user: CurrentUser,  # ✅ Add authentication dependency
-    db: DbSession,
-    google_access_token: str = Query(..., description="Google OAuth access token")
+    current_user: CurrentUser,
+    google_access_token: Optional[str] = Cookie(None)
 ):
     """
-    Endpoint to get the last video liked by the user.
-    Requires authentication.
+    ✅ SECURE: Endpoint to get the last video liked by the user.
+    Reads Google access token from HttpOnly cookie (frontend never sees it).
     """
-    # Verify user is authenticated
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Authentication required")
+    # Validate user is authenticated (JWT check)
+    if not current_user.get_uuid():
+        raise HTTPException(status_code=401, detail="User not authenticated")
     
+    # Check if Google token exists in cookie
+    if not google_access_token:
+        raise HTTPException(
+            status_code=400, 
+            detail="No Google access token found. Please sign in with Google to access YouTube features."
+        )
+    
+    # Fetch and return the last liked video
     return await get_last_liked_video(google_access_token)

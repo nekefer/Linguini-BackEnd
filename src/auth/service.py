@@ -103,19 +103,19 @@ def create_token_pair(user: User, settings: Settings, db: Session) -> models.Tok
     ✅ UPDATED: Create both access and refresh tokens (stateless refresh tokens).
     
     Access token: Short-lived (30 minutes) for API calls
-    Refresh token: Long-lived (30 days) for getting new access tokens
+    Refresh token: Long-lived (7 days) for getting new access tokens
     """
     # Create access token (short-lived)
     access_token = create_access_token(
         user.email, 
         user.id, 
-        timedelta(minutes=1), #1 minute is  for testing  the real time is 30 minutes from setting   
+        timedelta(minutes=settings.access_token_expire_minutes*60), #1 minute is  for testing  the real time is 30 minutes from setting   
         settings.jwt_secret_key, 
         settings.algorithm
     )
     
     # Create refresh token (long-lived) - NO DATABASE STORAGE
-    refresh_expires = timedelta(days=settings.refresh_token_expire_days)
+    refresh_expires = timedelta(days=settings.refresh_token_expire_days*24*60*60)  # Convert days to seconds
     refresh_token = create_refresh_token(
         user.id, 
         refresh_expires, 
@@ -192,7 +192,7 @@ def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depen
     return create_token_pair(user, settings, db)  # Use token pair instead of single token
 
 
-def google_authenticate_user(db: Session, user_info: dict, settings: Settings) -> models.Token:
+def google_authenticate_user(db: Session, user_info: dict, settings: Settings, google_tokens: dict = None) -> models.Token:
     """
     Authenticate or register a user using Google OAuth info.
     Returns a Token object with both access and refresh tokens.
@@ -227,6 +227,11 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings) -
         if avatar_url:
             user.avatar_url = avatar_url
             
+        # Store Google tokens if provided
+        if google_tokens:
+            user.google_access_token = google_tokens.get("access_token")
+            user.google_refresh_token = google_tokens.get("refresh_token")
+            
         db.commit()
         db.refresh(user)
         logging.info(f"Authenticated existing user via Google OAuth: {email}")
@@ -240,7 +245,9 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings) -
             google_id=google_id,
             auth_method='google',
             avatar_url=avatar_url,
-            password_hash=None
+            password_hash=None,
+            google_access_token=google_tokens.get("access_token") if google_tokens else None,
+            google_refresh_token=google_tokens.get("refresh_token") if google_tokens else None
         )
         db.add(user)
         db.commit()

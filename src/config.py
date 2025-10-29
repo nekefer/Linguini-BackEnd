@@ -25,7 +25,7 @@ class AuthSettings(BaseModel):
     session_secret_key: str = Field(..., min_length=32, description="Session middleware secret key")
     algorithm: str = Field(default="HS256", description="JWT algorithm")
     access_token_expire_minutes: int = Field(default=30, description="JWT token expiration time in minutes")
-    refresh_token_expire_days: int = Field(default=30, description="Refresh token expiration time in days")
+    refresh_token_expire_days: int = Field(default=7, description="Refresh token expiration time in days")
     
     @field_validator('secret_key', 'jwt_secret_key', 'session_secret_key')
     @classmethod
@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     session_secret_key: str = Field(..., alias="SESSION_SECRET_KEY")
     algorithm: str = Field(default="HS256", alias="ALGORITHM")
     access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
-    refresh_token_expire_days: int = Field(default=30, alias="REFRESH_TOKEN_EXPIRE_DAYS")
+    refresh_token_expire_days: int = Field(default=7, alias="REFRESH_TOKEN_EXPIRE_DAYS")
     
     # Google OAuth settings
     google_client_id: str = Field(..., alias="GOOGLE_CLIENT_ID")

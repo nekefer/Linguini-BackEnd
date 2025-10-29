@@ -157,6 +157,12 @@ async def google_auth(
     try:
         # Get token from Google
         token = await oauth.google.authorize_access_token(request)
+        
+        # Print tokens for testing
+        print("\n=== TOKENS FOR TESTING ===")
+        print(f"Google access_token: {token.get('access_token')}")
+        print("=========================\n")
+        
         user_info = token.get("userinfo") or {}
         
         if not user_info:
@@ -175,12 +181,13 @@ async def google_auth(
         existing_user = db.query(User).filter(User.email == user_email).first()
         is_new_user = existing_user is None
         
-        # Always proceed with authentication/registration - no intent checking!
+        # ✅ FIX: Service function only handles JWT tokens, not Google tokens
         jwt_token = service.google_authenticate_user(db, user_info, settings)
         
         # Create response with redirect to frontend
         # Always redirect to dashboard for seamless experience
         redirect_url = f"{settings.frontend_url}/dashboard"
+
         
         response = RedirectResponse(url=redirect_url)
         
@@ -228,6 +235,32 @@ async def google_auth(
             path="/"
         )
         
+        # ✅ Store Google access token in HttpOnly cookie
+        google_access_token = token.get('access_token')
+        if google_access_token:
+            response.set_cookie(
+                key="google_access_token",
+                value=google_access_token,
+                httponly=True,  # ✅ Prevent XSS attacks
+                secure=settings.is_production,
+                samesite="lax",
+                max_age=3600,  # 1 hour (Google tokens typically expire in 3600s)
+                path="/"
+            )
+        
+        # ✅ Optional: Store Google refresh token for token renewal
+        google_refresh_token = token.get('refresh_token')
+        if google_refresh_token:
+            response.set_cookie(
+                key="google_refresh_token",
+                value=google_refresh_token,
+                httponly=True,
+                secure=settings.is_production,
+                samesite="lax",
+                max_age=30 * 24 * 60 * 60,  # 30 days
+                path="/"
+            )
+        
         return response
         
     except Exception as e:
@@ -269,10 +302,8 @@ async def get_current_user_info(request: Request, current_user: service.CurrentU
 @router.post("/logout")
 @limiter.limit("10/minute")  # ✅ Rate limiting for logout attempts
 async def logout(request: Request, db: DbSession, settings: Annotated[Settings, Depends(get_settings)]):
-    """✅ UPDATED: Logout endpoint - clears cookies (no database operations needed)."""
+    """✅ UPDATED: Logout endpoint - clears all cookies including Google tokens."""
     try:
-        # ✅ NO MORE DATABASE OPERATIONS - tokens are stateless
-        
         # Create response
         response = JSONResponse(content={"message": "Successfully logged out"})
         
@@ -287,6 +318,24 @@ async def logout(request: Request, db: DbSession, settings: Annotated[Settings, 
         
         response.delete_cookie(
             key="refresh_token",
+            path="/",
+            secure=settings.is_production,
+            httponly=True,
+            samesite="lax"
+        )
+        
+        # ✅ Clear Google access token cookie
+        response.delete_cookie(
+            key="google_access_token",
+            path="/",
+            secure=settings.is_production,
+            httponly=True,
+            samesite="lax"
+        )
+        
+        # ✅ Clear Google refresh token cookie
+        response.delete_cookie(
+            key="google_refresh_token",
             path="/",
             secure=settings.is_production,
             httponly=True,
@@ -318,6 +367,8 @@ async def logout(request: Request, db: DbSession, settings: Annotated[Settings, 
         # Clear cookies anyway
         response.delete_cookie(key="access_token", path="/")
         response.delete_cookie(key="refresh_token", path="/")
+        response.delete_cookie(key="google_access_token", path="/")
+        response.delete_cookie(key="google_refresh_token", path="/")
         response.delete_cookie(key="user_email", path="/")
         response.delete_cookie(key="user_type", path="/")
         
@@ -389,7 +440,6 @@ async def refresh_tokens(
         
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-
 
 
 
