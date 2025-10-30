@@ -159,9 +159,6 @@ async def google_auth(
         token = await oauth.google.authorize_access_token(request)
         
         # Print tokens for testing
-        print("\n=== TOKENS FOR TESTING ===")
-        print(f"Google access_token: {token.get('access_token')}")
-        print("=========================\n")
         
         user_info = token.get("userinfo") or {}
         

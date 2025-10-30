@@ -226,11 +226,7 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
             user.google_id = google_id
         if avatar_url:
             user.avatar_url = avatar_url
-            
-        # Store Google tokens if provided
-        if google_tokens:
-            user.google_access_token = google_tokens.get("access_token")
-            user.google_refresh_token = google_tokens.get("refresh_token")
+
             
         db.commit()
         db.refresh(user)
@@ -246,8 +242,6 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
             auth_method='google',
             avatar_url=avatar_url,
             password_hash=None,
-            google_access_token=google_tokens.get("access_token") if google_tokens else None,
-            google_refresh_token=google_tokens.get("refresh_token") if google_tokens else None
         )
         db.add(user)
         db.commit()
