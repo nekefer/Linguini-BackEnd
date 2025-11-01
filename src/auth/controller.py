@@ -356,12 +356,17 @@ async def refresh_tokens(
         # ✅ Verify refresh token and get new token pair (no database lookup for token validation)
         new_tokens = service.refresh_token_pair(refresh_token, db, settings)
         
+        # ✅ Check if Google tokens are still valid
+        google_access_token = request.cookies.get("google_access_token")
+        google_tokens_valid = google_access_token is not None
+        
         # Create response
         response = JSONResponse(content={
             "access_token": new_tokens.access_token,
             "refresh_token": new_tokens.refresh_token,
             "token_type": new_tokens.token_type,
-            "expires_in": new_tokens.expires_in
+            "expires_in": new_tokens.expires_in,
+            "google_tokens_valid": google_tokens_valid  # ✅ NEW: Tell frontend if Google tokens exist
         })
         
         # Set new cookies

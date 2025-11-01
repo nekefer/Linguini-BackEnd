@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 from fastapi import APIRouter, Query, Depends, HTTPException, Request
 from typing import List, Optional
 from ..auth.service import CurrentUser
@@ -10,6 +11,14 @@ from ..entities.user_video_history import UserVideoHistory
 import logging
 
 logger = logging.getLogger(__name__)
+=======
+from fastapi import APIRouter, Cookie, HTTPException, Query, Depends
+from typing import Optional, Annotated, List
+from .service import get_last_liked_video, get_trending_videos, get_captions, extract_vocab
+from .models import LikedVideo, TrendingVideo, CaptionsResponse, VocabResponse
+from ..auth.service import CurrentUser
+from ..config import Settings, get_settings
+>>>>>>> Stashed changes
 
 router = APIRouter(
     prefix="/youtube",
@@ -197,6 +206,7 @@ async def track_video_interaction(
             watch_time=watch_time,
             is_liked=is_liked
         )
+<<<<<<< Updated upstream
         
         return {
             "interaction": history.to_dict(),
@@ -240,3 +250,45 @@ async def get_user_video_history(
     except Exception as e:
         logger.error(f"Error retrieving video history: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve video history: {str(e)}")
+=======
+    
+    # Fetch and return the last liked video
+    return await get_last_liked_video(google_access_token)
+
+@router.get("/trending", response_model=List[TrendingVideo])
+async def trending(
+    region: str = Query("US", min_length=2, max_length=2, description="ISO 3166-1 alpha-2 country code"),
+    lang: Optional[str] = Query(None, description="Preferred BCP-47 language code (e.g., en, fr, es)"),
+    max_results: int = Query(20, ge=1, le=50, description="Maximum number of results"),
+    settings: Annotated[Settings, Depends(get_settings)] = None,
+):
+    """
+    Get trending videos by region (no authentication required).
+    Results are cached for 15 minutes to reduce API quota usage.
+    """
+    return await get_trending_videos(settings.youtube_api_key, region, lang, max_results)
+
+@router.get("/{video_id}/captions", response_model=CaptionsResponse)
+async def captions(
+    video_id: str, 
+    lang: Optional[str] = Query(None, description="Preferred caption language (BCP-47 code)")
+):
+    """
+    Get captions for a video (no authentication required for public videos).
+    Uses youtube-transcript-api to fetch captions. Tries human captions first, falls back to auto-generated.
+    """
+    return await get_captions(video_id, lang)
+
+@router.get("/{video_id}/vocab", response_model=VocabResponse)
+async def vocab(
+    video_id: str, 
+    lang: Optional[str] = Query(None, description="Caption language"),
+    top_n: int = Query(50, ge=5, le=200, description="Number of top words to return")
+):
+    """
+    Extract vocabulary from video captions (no authentication required).
+    Returns most frequent words with counts and example usage from the video.
+    """
+    caps = await get_captions(video_id, lang)
+    return await extract_vocab(caps, caps.lang or (lang or "unknown"), top_n)
+>>>>>>> Stashed changes

@@ -8,6 +8,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 import httpx
+<<<<<<< Updated upstream
 from datetime import datetime, timedelta
 
 from ..config import get_settings
@@ -281,3 +282,187 @@ class YouTubeDatabaseService:
             self.db.commit()
             self.db.refresh(history)
             return history
+=======
+from fastapi import HTTPException
+from typing import List, Optional
+from datetime import datetime, timedelta
+from collections import Counter, defaultdict
+import re
+from .models import LikedVideo, TrendingVideo, CaptionsResponse, CaptionSegment, VocabResponse, VocabItem
+
+YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
+
+# Simple in-memory cache for trending videos
+_trending_cache = {}
+_cache_expiry = {}
+
+async def get_last_liked_video(google_access_token: str) -> LikedVideo:
+    """
+    Fetch the last video liked by the user using the YouTube Data API (async with httpx).
+    """
+    playlist_id = "LL"
+    url = "https://www.googleapis.com/youtube/v3/playlistItems"
+    params = {
+        "part": "snippet",
+        "playlistId": playlist_id,
+        "maxResults": 1
+    }
+    headers = {
+        "Authorization": f"Bearer {google_access_token}"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, params=params, headers=headers)
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to fetch liked videos")
+    items = response.json().get("items", [])
+    if not items:
+        raise HTTPException(status_code=404, detail="No liked videos found")
+    video = items[0]["snippet"]
+    return LikedVideo(
+        video_id=video["resourceId"]["videoId"],
+        title=video["title"],
+        description=video["description"],
+        thumbnails=video["thumbnails"]
+    )
+
+async def get_trending_videos(
+    api_key: str, 
+    region: str = "US", 
+    lang: Optional[str] = None, 
+    max_results: int = 20
+) -> List[TrendingVideo]:
+    """
+    Fetch trending videos by region, optionally filter by language.
+    Uses 15-minute caching to reduce API quota usage.
+    """
+    cache_key = f"{region}_{lang}_{max_results}"
+    
+    # Check cache
+    if cache_key in _trending_cache:
+        if datetime.utcnow() < _cache_expiry[cache_key]:
+            print(f"✅ Cache HIT for {cache_key}")
+            return _trending_cache[cache_key]
+    
+    print(f"❌ Cache MISS for {cache_key} - calling YouTube API")
+    
+    # Call YouTube Data API
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(
+            f"{YOUTUBE_API}/videos",
+            params={
+                "part": "snippet",
+                "chart": "mostPopular",
+                "regionCode": region,
+                "maxResults": max_results,
+                "key": api_key,
+            },
+        )
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    
+    data = response.json()
+    items = []
+    
+    for it in data.get("items", []):
+        snippet = it.get("snippet", {})
+        thumbnails = snippet.get("thumbnails", {})
+        thumb = thumbnails.get("high", {}).get("url") or thumbnails.get("default", {}).get("url", "")
+        
+        video_lang = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage")
+        
+        items.append(
+            TrendingVideo(
+                video_id=it["id"],
+                title=snippet.get("title", ""),
+                channel_title=snippet.get("channelTitle", ""),
+                thumbnail=thumb,
+                lang=video_lang,
+            )
+        )
+    
+    # Filter by language if provided
+    if lang:
+        items = [v for v in items if v.lang and v.lang.startswith(lang)]
+    
+    # Store in cache for 15 minutes
+    _trending_cache[cache_key] = items
+    _cache_expiry[cache_key] = datetime.utcnow() + timedelta(minutes=15)
+    
+    return items
+
+async def get_captions(video_id: str, lang: Optional[str] = None) -> CaptionsResponse:
+    """
+    Fetch captions using youtube-transcript-api (unofficial but widely used).
+    Uses the new API: YouTubeTranscriptApi().fetch(video_id, languages=[...])
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        
+        # Initialize the API
+        ytt_api = YouTubeTranscriptApi()
+        
+        # Fetch transcript with optional language preference
+        if lang:
+            fetched_transcript = ytt_api.fetch(video_id, languages=[lang, 'en'])
+        else:
+            fetched_transcript = ytt_api.fetch(video_id)
+        
+        # Convert FetchedTranscript to our CaptionSegment format
+        segments = [
+            CaptionSegment(
+                start=snippet.start, 
+                duration=snippet.duration, 
+                text=snippet.text
+            ) 
+            for snippet in fetched_transcript
+        ]
+        
+        return CaptionsResponse(
+            lang=fetched_transcript.language_code, 
+            source="auto" if fetched_transcript.is_generated else "human", 
+            segments=segments
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"No captions available: {str(e)}")
+
+async def extract_vocab(
+    captions: CaptionsResponse, 
+    lang: str, 
+    top_n: int = 50
+) -> VocabResponse:
+    """
+    Extract vocabulary from captions with frequency and examples.
+    Basic tokenization - can be enhanced with spaCy later.
+    """
+    # Combine all caption text
+    text = " ".join(s.text for s in captions.segments)
+    
+    # Tokenize (basic word splitting)
+    tokens = [t.lower() for t in re.findall(r"\b\w+\b", text)]
+    
+    # Remove common stopwords (basic list)
+    STOP = set("the a an and or to of in on for with is are was were i you he she it they we at be by as from this that these those my your his her its our their what which who whom when where why how can could would should may might must will do does did have has had am".split())
+    filtered_tokens = [t for t in tokens if t not in STOP and len(t) > 2]
+    
+    # Count occurrences
+    counts = Counter(filtered_tokens).most_common(top_n)
+    
+    # Build examples for each word
+    examples = defaultdict(list)
+    for seg in captions.segments:
+        for t in re.findall(r"\b\w+\b", seg.text.lower()):
+            if t in dict(counts) and len(examples[t]) < 3:
+                examples[t].append({
+                    "text": seg.text, 
+                    "ts": seg.start
+                })
+    
+    items = [
+        VocabItem(lemma=word, count=count, examples=examples[word]) 
+        for word, count in counts
+    ]
+    
+    return VocabResponse(lang=lang, tokens=items)
+>>>>>>> Stashed changes
