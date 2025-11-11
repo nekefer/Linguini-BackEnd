@@ -17,3 +17,5 @@ itsdangerous
 google-api-python-client 
 google-auth-oauthlib 
 google-auth-httplib2
+httpx>=0.25.0
+cachetools>=5.3.0
