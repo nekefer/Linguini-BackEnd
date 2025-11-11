@@ -1,13 +1,13 @@
 import httpx
-import time
+import asyncio
 from typing import Optional
 from fastapi import HTTPException
+from cachetools import TTLCache
 from .models import LikedVideo, TrendingVideo, TrendingVideosResponse
 from ..config import get_settings
 
-# Cache for trending videos (15-minute TTL)
-_TRENDING_CACHE = {}
-_CACHE_TTL = 900  # 15 minutes
+# Cache for trending videos (15-minute TTL, max 128 entries)
+_TRENDING_CACHE = TTLCache(maxsize=128, ttl=900)
 
 async def get_last_liked_video(google_access_token: str) -> LikedVideo:
     """
@@ -63,11 +63,9 @@ async def get_trending_videos(
     # Generate cache key
     cache_key = f"{region}:{max_results}:{page_token}:{category_id}"
     
-    # Check cache
+    # Check cache (TTLCache handles expiration automatically)
     if cache_key in _TRENDING_CACHE:
-        cached_data, cached_time = _TRENDING_CACHE[cache_key]
-        if time.time() - cached_time < _CACHE_TTL:
-            return cached_data
+        return _TRENDING_CACHE[cache_key]
     
     # Build request
     url = "https://www.googleapis.com/youtube/v3/videos"
@@ -117,15 +115,14 @@ async def get_trending_videos(
                     category=category_id
                 )
                 
-                # Cache result
-                _TRENDING_CACHE[cache_key] = (result, time.time())
+                # Cache result (TTLCache handles expiration and size limits)
+                _TRENDING_CACHE[cache_key] = result
                 
                 return result
             
             elif response.status_code == 429:  # Rate limit
                 if attempt < max_retries - 1:
-                    await httpx.AsyncClient().aclose()
-                    time.sleep(retry_delay)
+                    await asyncio.sleep(retry_delay)
                     retry_delay *= 2
                     continue
                 else:
@@ -142,7 +139,7 @@ async def get_trending_videos(
         
         except httpx.RequestError as e:
             if attempt < max_retries - 1:
-                time.sleep(retry_delay)
+                await asyncio.sleep(retry_delay)
                 retry_delay *= 2
                 continue
             else:

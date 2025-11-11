@@ -115,7 +115,6 @@ class Settings(BaseSettings):
     
     # YouTube API settings
     youtube_api_key: str = Field(..., alias="YOUTUBE_API_KEY")
-    youtube_cookies_path: Optional[str] = Field(None, alias="YOUTUBE_COOKIES_PATH")
     
     # App settings
     environment: str = Field(default="development", alias="ENVIRONMENT")
