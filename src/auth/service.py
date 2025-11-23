@@ -13,8 +13,102 @@ from fastapi.security import OAuth2PasswordRequestForm
 from ..exceptions import AuthenticationError
 from ..config import get_settings, Settings
 import logging
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request as GoogleRequest
+from src.security.crypto import encrypt_token, decrypt_token
 
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+logger = logging.getLogger("auth.google")
+
+
+def refresh_google_token(db: Session, user_id: UUID, settings: Settings) -> str:
+    """
+    Refresh expired Google access token using refresh token.
+    
+    Args:
+        db: Database session
+        user_id: User UUID
+        settings: Application settings
+        
+    Returns:
+        New access token
+        
+    Raises:
+        AuthenticationError: If refresh fails
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.google_refresh_token:
+        logger.error(f"No Google refresh token for user {user_id}")
+        raise AuthenticationError("No Google refresh token available. Please reconnect your Google account.")
+    
+    try:
+        # Create credentials object
+        credentials = Credentials(
+            token=decrypt_token(user.google_access_token),
+            refresh_token=decrypt_token(user.google_refresh_token),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=settings.google_client_id,
+            client_secret=settings.google_client_secret
+        )
+        
+        # Refresh the token
+        credentials.refresh(GoogleRequest())
+        
+        # Update database with new tokens (store encrypted)
+        user.google_access_token = encrypt_token(credentials.token)
+        user.google_token_expires_at = credentials.expiry
+        
+        # Google may issue a new refresh token
+        if credentials.refresh_token:
+            user.google_refresh_token = encrypt_token(credentials.refresh_token)
+        
+        db.commit()
+        db.refresh(user)
+        
+        logger.info(f"Successfully refreshed Google token for user {user_id}")
+        return credentials.token  # return plaintext for immediate use
+        
+    except Exception as e:
+        logger.error(f"Failed to refresh Google token for user {user_id}: {str(e)}")
+        db.rollback()
+        raise AuthenticationError("Failed to refresh Google token. Please reconnect your Google account.")
+
+
+def get_valid_google_token(db: Session, user_id: UUID, settings: Settings) -> str:
+    """
+    Get a valid Google access token, refreshing if necessary.
+    
+    Args:
+        db: Database session
+        user_id: User UUID
+        settings: Application settings
+        
+    Returns:
+        Valid access token
+        
+    Raises:
+        AuthenticationError: If user not found or token refresh fails
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise AuthenticationError("User not found")
+    
+    if not user.google_access_token:
+        raise AuthenticationError("No Google account connected. Please sign in with Google.")
+    
+    # Check if token is expired or about to expire (within 5 minutes)
+    now = datetime.now(timezone.utc)
+    needs_refresh = (
+        not user.google_token_expires_at or 
+        user.google_token_expires_at <= now + timedelta(minutes=5)
+    )
+    
+    if needs_refresh:
+        logger.info(f"Token expired or expiring soon for user {user_id}, refreshing...")
+        return refresh_google_token(db, user_id, settings)
+    
+    logger.debug(f"Using existing token for user {user_id} (expires at {user.google_token_expires_at})")
+    return decrypt_token(user.google_access_token)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -196,6 +290,7 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
     """
     Authenticate or register a user using Google OAuth info.
     Returns a Token object with both access and refresh tokens.
+    Stores Google OAuth tokens in database for API access.
     """
     email = user_info.get("email")
     first_name = user_info.get("given_name", "")
@@ -226,7 +321,19 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
             user.google_id = google_id
         if avatar_url:
             user.avatar_url = avatar_url
-
+        
+        # Store Google OAuth tokens in database
+        if google_tokens:
+            access_raw = google_tokens.get('access_token')
+            refresh_raw = google_tokens.get('refresh_token')
+            if access_raw:
+                user.google_access_token = encrypt_token(access_raw)
+            if refresh_raw:
+                user.google_refresh_token = encrypt_token(refresh_raw)
+                logger.info(f"Stored new (encrypted) refresh token for user {user.id}")
+            expires_in = google_tokens.get('expires_in', 3600)
+            user.google_token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            logger.info(f"Token expires at: {user.google_token_expires_at}")
             
         db.commit()
         db.refresh(user)
@@ -242,6 +349,12 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
             auth_method='google',
             avatar_url=avatar_url,
             password_hash=None,
+            google_access_token=(encrypt_token(google_tokens.get('access_token')) if google_tokens and google_tokens.get('access_token') else None),
+            google_refresh_token=(encrypt_token(google_tokens.get('refresh_token')) if google_tokens and google_tokens.get('refresh_token') else None),
+            google_token_expires_at=(
+                datetime.now(timezone.utc) + timedelta(seconds=google_tokens.get('expires_in', 3600))
+                if google_tokens else None
+            )
         )
         db.add(user)
         db.commit()

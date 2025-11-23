@@ -38,7 +38,7 @@ class Playlist(Base):
     
     # Relationships
     user = relationship("User", back_populates="playlists")
-    videos = relationship("PlaylistVideo", back_populates="playlist")
+    # videos = relationship("PlaylistVideo", back_populates="playlist")  # TODO: Create PlaylistVideo entity
     
     def __repr__(self):
         return f"<Playlist(id={self.id}, title='{self.title}', user_id={self.user_id})>"

@@ -138,7 +138,15 @@ async def google_login(request: Request):
     import secrets
     state = secrets.token_urlsafe(32)
     
-    return await oauth.google.authorize_redirect(request, redirect_uri=redirect_uri, state=state)
+    # access_type='offline' + prompt='consent' ensures we get a refresh_token
+    # This allows us to refresh expired access tokens without user re-authentication
+    return await oauth.google.authorize_redirect(
+        request, 
+        redirect_uri=redirect_uri, 
+        state=state,
+        access_type='offline',  # Request offline access (refresh token)
+        prompt='consent'  # Force consent screen to get refresh token every time
+    )
 
 
 # Handle the OAuth callback from Google
@@ -155,10 +163,8 @@ async def google_auth(
     - Log in if user already exists
     """
     try:
-        # Get token from Google
+        # Get full token response from Google (includes access_token, refresh_token, expires_in)
         token = await oauth.google.authorize_access_token(request)
-        
-        # Print tokens for testing
         
         user_info = token.get("userinfo") or {}
         
@@ -178,8 +184,8 @@ async def google_auth(
         existing_user = db.query(User).filter(User.email == user_email).first()
         is_new_user = existing_user is None
         
-        # ✅ FIX: Service function only handles JWT tokens, not Google tokens
-        jwt_token = service.google_authenticate_user(db, user_info, settings)
+        # Pass full token dict to service (includes access_token, refresh_token, expires_in)
+        jwt_token = service.google_authenticate_user(db, user_info, settings, google_tokens=token)
         
         # Create response with redirect to frontend
         # Always redirect to dashboard for seamless experience
