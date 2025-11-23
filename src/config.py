@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     # YouTube API settings
     youtube_api_key: str = Field(..., alias="YOUTUBE_API_KEY")
     
+    # Encryption settings
+    google_token_enc_key: str = Field(..., alias="GOOGLE_TOKEN_ENC_KEY")
+    
     # App settings
     environment: str = Field(default="development", alias="ENVIRONMENT")
     frontend_url: str = Field(..., alias="FRONTEND_URL")
