@@ -5,9 +5,13 @@ from fastapi import HTTPException
 from cachetools import TTLCache
 from .models import LikedVideo, TrendingVideo, TrendingVideosResponse
 from ..config import get_settings
+import logging
+
 
 # Cache for trending videos (15-minute TTL, max 128 entries)
 _TRENDING_CACHE = TTLCache(maxsize=128, ttl=900)
+
+logger = logging.getLogger("youtube.trending")
 
 async def get_last_liked_video(google_access_token: str) -> LikedVideo:
     """
@@ -41,7 +45,7 @@ async def get_last_liked_video(google_access_token: str) -> LikedVideo:
 
 async def get_trending_videos(
     region: str = "US",
-    max_results: int = 25,
+    max_results: int = 20,
     page_token: Optional[str] = None,
     category_id: Optional[str] = None
 ) -> TrendingVideosResponse:
@@ -66,6 +70,7 @@ async def get_trending_videos(
     
     # Check cache (TTLCache handles expiration automatically)
     if cache_key in _TRENDING_CACHE:
+        logger.info(f"Trending cache HIT key={cache_key}")
         return _TRENDING_CACHE[cache_key]
     
     # Build request
@@ -118,7 +123,9 @@ async def get_trending_videos(
 
                     # Cache result (TTLCache handles expiration and size limits)
                     _TRENDING_CACHE[cache_key] = result
+                    logger.info(f"Trending cache SET key={cache_key}")
 
+                    
                     return result
 
                 elif response.status_code == 429:  # Rate limit
@@ -151,3 +158,4 @@ async def get_trending_videos(
     
     # Should never reach here, but just in case
     raise HTTPException(status_code=500, detail="Unexpected error fetching trending videos")
+

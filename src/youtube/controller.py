@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Cookie, HTTPException, Query
-from typing import Optional
+from fastapi import APIRouter, Cookie, HTTPException, Query, Depends
+from typing import Optional, Annotated
 from .service import get_last_liked_video, get_trending_videos
 from .models import LikedVideo, TrendingVideosResponse
-from ..auth.service import CurrentUser
+from ..auth.service import CurrentUser, get_valid_google_token
+from ..database.core import get_db
+from sqlalchemy.orm import Session
+from ..config import get_settings, Settings
 
 router = APIRouter(
     prefix="/youtube",
@@ -32,22 +35,31 @@ async def trending_videos(
 @router.get("/last-liked-video", response_model=LikedVideo)
 async def last_liked_video(
     current_user: CurrentUser,
-    google_access_token: Optional[str] = Cookie(None)
+    db: Annotated[Session, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)]
 ):
     """
     SECURE: Endpoint to get the last video liked by the user.
-    Reads Google access token from HttpOnly cookie (frontend never sees it).
+    Automatically refreshes Google token if expired.
     """
     # Validate user is authenticated (JWT check)
     if not current_user.get_uuid():
         raise HTTPException(status_code=401, detail="User not authenticated")
     
-    # Check if Google token exists in cookie
-    if not google_access_token:
+    try:
+        # Get fresh Google token (auto-refreshes if needed)
+        google_token = get_valid_google_token(db, current_user.get_uuid(), settings)
+        
+        # Fetch and return the last liked video
+        return await get_last_liked_video(google_token)
+        
+    except Exception as e:
+        if "No Google" in str(e) or "reconnect" in str(e):
+            raise HTTPException(
+                status_code=400, 
+                detail="Google account not connected. Please sign in with Google."
+            )
         raise HTTPException(
-            status_code=400, 
-            detail="No Google access token found. Please sign in with Google to access YouTube features."
+            status_code=500,
+            detail=f"Failed to fetch liked video: {str(e)}"
         )
-    
-    # Fetch and return the last liked video
-    return await get_last_liked_video(google_access_token)

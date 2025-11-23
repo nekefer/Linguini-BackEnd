@@ -1,5 +1,6 @@
 from sqlalchemy import Column, String, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
 from ..database.core import Base 
@@ -16,8 +17,17 @@ class User(Base):
     auth_method = Column(String, nullable=False, default='password')  # 'password' or 'google'
     avatar_url = Column(String, nullable=True)     # Optional profile picture
     is_active = Column(Boolean, default=True)      # Track if user account is active
+    
+    # Google OAuth tokens for API access
+    google_access_token = Column(String, nullable=True)  # Google access token (expires in 1 hour)
+    google_refresh_token = Column(String, nullable=True)  # Google refresh token (long-lived)
+    google_token_expires_at = Column(DateTime(timezone=True), nullable=True)  # Token expiration timestamp
+    
     created_at = Column(DateTime, default=datetime.utcnow)  # When user was created
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # Last update time
+    
+    # Relationships
+    playlists = relationship("Playlist", back_populates="user")
 
     def __repr__(self):
         return f"<User(email='{self.email}', first_name='{self.first_name}', last_name='{self.last_name}', auth_method='{self.auth_method}')>"
