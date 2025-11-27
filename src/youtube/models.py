@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 class LikedVideo(BaseModel):
     video_id: str
@@ -20,3 +20,15 @@ class TrendingVideosResponse(BaseModel):
     next_page_token: Optional[str]
     region: str
     category: Optional[str]
+
+class Caption(BaseModel):
+    """Individual caption entry with timestamp"""
+    text: str
+    start: float
+    duration: float
+
+class CaptionsResponse(BaseModel):
+    """Response model for video captions"""
+    video_id: str
+    language: str
+    captions: List[Caption]

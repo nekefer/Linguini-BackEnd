@@ -3,6 +3,9 @@ import asyncio
 from typing import Optional
 from fastapi import HTTPException
 from cachetools import TTLCache
+from functools import lru_cache
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 from .models import LikedVideo, TrendingVideo, TrendingVideosResponse
 from ..config import get_settings
 import logging
@@ -11,7 +14,114 @@ import logging
 # Cache for trending videos (15-minute TTL, max 128 entries)
 _TRENDING_CACHE = TTLCache(maxsize=128, ttl=900)
 
+# Cache for captions (1 hour TTL, max 100 entries)
+_CAPTIONS_CACHE = TTLCache(maxsize=100, ttl=3600)
+
 logger = logging.getLogger("youtube.trending")
+
+@lru_cache(maxsize=100)
+def _fetch_captions_cached(video_id: str, language: str):
+    """
+    Fetch and cache captions. LRU cache keeps last 100 videos.
+    Captions rarely change, so caching is safe.
+    """
+    api = YouTubeTranscriptApi()
+    
+    # Get available transcripts
+    transcript_list = api.list(video_id)
+    available_transcripts = list(transcript_list)
+    
+    # Try to find the requested language
+    for transcript in available_transcripts:
+        if transcript.language_code == language:
+            fetched = transcript.fetch()
+            # Convert FetchedTranscript to list of dicts
+            return [{"text": item.text, "start": item.start, "duration": item.duration} 
+                   for item in fetched]
+    
+    # Fallback to English if not found
+    if language != 'en':
+        for transcript in available_transcripts:
+            if transcript.language_code == 'en':
+                fetched = transcript.fetch()
+                return [{"text": item.text, "start": item.start, "duration": item.duration} 
+                       for item in fetched]
+    
+    # Use first available transcript
+    if available_transcripts:
+        first_transcript = available_transcripts[0]
+        fetched = first_transcript.fetch()
+        return [{"text": item.text, "start": item.start, "duration": item.duration} 
+               for item in fetched]
+    
+    # If nothing found, try simple fetch (this shouldn't happen)
+    fetched = api.fetch(video_id)
+    return [{"text": item.text, "start": item.start, "duration": item.duration} 
+           for item in fetched]
+
+async def get_video_captions(video_id: str, language: str = 'en'):
+    """
+    Fetch captions for a YouTube video.
+    
+    Args:
+        video_id: YouTube video ID
+        language: Language code (e.g., 'en', 'es', 'fr')
+        
+    Returns:
+        Dict with video_id, language, and captions data
+        
+    Raises:
+        HTTPException: If captions unavailable or video not found
+    """
+    cache_key = (video_id, language)
+    
+    # Check cache first
+    if cache_key in _CAPTIONS_CACHE:
+        logger.debug(f"Returning cached captions for {video_id}")
+        return _CAPTIONS_CACHE[cache_key]
+    
+    try:
+        logger.info(f"Fetching captions for video {video_id}, language: {language}")
+        
+        # Fetch from YouTube
+        captions = _fetch_captions_cached(video_id, language)
+        
+        result = {
+            "video_id": video_id,
+            "language": language,
+            "captions": captions
+        }
+        
+        # Cache the result
+        _CAPTIONS_CACHE[cache_key] = result
+        
+        logger.info(f"Successfully fetched {len(captions)} captions for {video_id}")
+        return result
+        
+    except TranscriptsDisabled:
+        logger.warning(f"Captions disabled for video {video_id}")
+        raise HTTPException(
+            status_code=404,
+            detail="Captions are disabled for this video"
+        )
+    except NoTranscriptFound:
+        logger.warning(f"No captions found for video {video_id} in language {language}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No captions available in language: {language}"
+        )
+    except VideoUnavailable:
+        logger.warning(f"Video {video_id} not found or unavailable")
+        raise HTTPException(
+            status_code=404,
+            detail="Video not found or unavailable"
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch captions for {video_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch captions: {str(e)}"
+        )
 
 async def get_last_liked_video(google_access_token: str) -> LikedVideo:
     """
