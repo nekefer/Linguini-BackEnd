@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Cookie, HTTPException, Query, Depends
 from typing import Optional, Annotated
-from .service import get_last_liked_video, get_trending_videos
-from .models import LikedVideo, TrendingVideosResponse
+from .service import get_last_liked_video, get_trending_videos, get_video_captions
+from .models import LikedVideo, TrendingVideosResponse, CaptionsResponse
 from ..auth.service import CurrentUser, get_valid_google_token
 from ..database.core import get_db
 from sqlalchemy.orm import Session
@@ -30,6 +30,29 @@ async def trending_videos(
         page_token=page_token,
         category_id=category_id
     )
+
+@router.get("/{video_id}/captions", response_model=CaptionsResponse)
+async def get_captions(
+    video_id: str,
+    language: str = Query(default='en', description="Language code (e.g., 'en', 'es', 'fr')")
+):
+    """
+    PUBLIC: Fetch captions for a YouTube video.
+    
+    Returns normalized captions with timestamps for synchronization.
+    
+    Args:
+        video_id: YouTube video ID
+        language: Caption language code (default: English)
+    
+    Returns:
+        CaptionsResponse with video_id, language, and list of timestamped captions
+        
+    Raises:
+        404: Captions not available or video not found
+        500: Internal error fetching captions
+    """
+    return await get_video_captions(video_id, language)
 
 
 @router.get("/last-liked-video", response_model=LikedVideo)
