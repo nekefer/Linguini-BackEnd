@@ -33,3 +33,9 @@ class InvalidPasswordError(UserError):
 class AuthenticationError(HTTPException):
     def __init__(self, message: str = "Could not validate user"):
         super().__init__(status_code=401, detail=message)
+
+
+class ValidationError(HTTPException):
+    """Exception for validation errors"""
+    def __init__(self, message: str = "Validation error"):
+        super().__init__(status_code=400, detail=message)
