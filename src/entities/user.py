@@ -28,6 +28,12 @@ class User(Base):
     
     # Relationships
     playlists = relationship("Playlist", back_populates="user")
+    user_words = relationship("UserWord", back_populates="user")
+
+    @property
+    def saved_words_count(self):
+        """Count of words saved by this user"""
+        return len(self.user_words)
 
     def __repr__(self):
         return f"<User(email='{self.email}', first_name='{self.first_name}', last_name='{self.last_name}', auth_method='{self.auth_method}')>"
