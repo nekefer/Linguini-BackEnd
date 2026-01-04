@@ -49,13 +49,25 @@ class VocabularyService:
             raise ValidationError("Failed to save word due to database constraint")
     
     @staticmethod
-    async def get_user_words(db: Session, user: User, skip: int = 0, limit: int = 100) -> list[UserWord]:
-        """Get user's saved words with word details"""
-        return db.query(UserWord).options(
-            joinedload(UserWord.word)
-        ).filter(
-            UserWord.user_id == user.id
-        ).order_by(UserWord.saved_at.desc()).offset(skip).limit(limit).all()
+    async def get_user_words(db: Session, user: User, skip: int = 0, limit: int = 100) -> tuple[list[UserWord], int]:
+        """Get user's saved words with word details, plus total count for pagination."""
+        total = (
+            db.query(UserWord)
+            .filter(UserWord.user_id == user.id)
+            .count()
+        )
+
+        items = (
+            db.query(UserWord)
+            .options(joinedload(UserWord.word))
+            .filter(UserWord.user_id == user.id)
+            .order_by(UserWord.saved_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+        return items, total
     
     @staticmethod
     async def is_word_saved(db: Session, user: User, word_text: str) -> bool:
