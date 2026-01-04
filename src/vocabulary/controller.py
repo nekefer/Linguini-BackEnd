@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from src.database.core import get_db
 from src.auth.service import get_current_user_from_cookie
@@ -14,6 +14,7 @@ from src.vocabulary.models import (
     CheckWordResponse,
 )
 from src.exceptions import ValidationError
+from src.rate_limiter import limiter, RATE_LIMITS
 
 
 router = APIRouter(prefix="/vocabulary", tags=["vocabulary"])
@@ -36,7 +37,9 @@ def get_current_user(
 
 
 @router.post("/save", response_model=SaveWordResponseSimple)
+@limiter.limit(RATE_LIMITS["vocabulary_save"])
 async def save_word(
+    request: Request,
     word_data: SaveWordRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -62,7 +65,9 @@ async def save_word(
 
 
 @router.get("/saved", response_model=SavedWordsList)
+@limiter.limit(RATE_LIMITS["vocabulary_get"])
 async def get_saved_words(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
@@ -94,7 +99,9 @@ async def get_saved_words(
 
 
 @router.get("/check/{word}", response_model=CheckWordResponse)
+@limiter.limit(RATE_LIMITS["vocabulary_get"])
 async def check_word_saved(
+    request: Request,
     word: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -108,7 +115,9 @@ async def check_word_saved(
 
 
 @router.delete("/{word}")
+@limiter.limit(RATE_LIMITS["vocabulary_delete"])
 async def delete_saved_word(
+    request: Request,
     word: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)

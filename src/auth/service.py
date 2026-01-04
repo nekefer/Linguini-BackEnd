@@ -7,7 +7,6 @@ import jwt
 from jwt import PyJWTError
 from sqlalchemy.orm import Session
 from src.entities.user import User
-# ✅ REMOVED: from src.entities.refresh_token import RefreshToken
 from . import models
 from fastapi.security import OAuth2PasswordRequestForm
 from ..exceptions import AuthenticationError
@@ -135,6 +134,7 @@ def authenticate_user(email: str, password: str, db: Session) -> User | bool:
         logging.warning(f"Failed authentication attempt for email: {email}")
         return False
     
+    logging.info(f"Successful password authentication for user: {email}")
     return user
 
 
@@ -203,13 +203,12 @@ def create_token_pair(user: User, settings: Settings, db: Session) -> models.Tok
     access_token = create_access_token(
         user.email, 
         user.id, 
-        timedelta(minutes=settings.access_token_expire_minutes*60), #1 minute is  for testing  the real time is 30 minutes from setting   
+        timedelta(minutes=settings.access_token_expire_minutes),
         settings.jwt_secret_key, 
         settings.algorithm
     )
-    
     # Create refresh token (long-lived) - NO DATABASE STORAGE
-    refresh_expires = timedelta(days=settings.refresh_token_expire_days*24*60*60)  # Convert days to seconds
+    refresh_expires = timedelta(days=settings.refresh_token_expire_days)
     refresh_token = create_refresh_token(
         user.id, 
         refresh_expires, 

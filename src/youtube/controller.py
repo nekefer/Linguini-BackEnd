@@ -1,19 +1,42 @@
-from fastapi import APIRouter, Cookie, HTTPException, Query, Depends
+from fastapi import APIRouter, Cookie, HTTPException, Query, Depends, Request
 from typing import Optional, Annotated
 from .service import get_last_liked_video, get_trending_videos, get_video_captions
 from .models import LikedVideo, TrendingVideosResponse, CaptionsResponse
-from ..auth.service import CurrentUser, get_valid_google_token
+from ..auth.service import CurrentUser, get_valid_google_token, get_current_user_from_cookie
+from ..auth import models as auth_models
 from ..database.core import get_db
+from ..rate_limiter import limiter, RATE_LIMITS
+from ..entities.user import User
 from sqlalchemy.orm import Session
 from ..config import get_settings, Settings
 
+# Helper to get authenticated user
+def get_current_user(
+    token_data: auth_models.TokenData = Depends(get_current_user_from_cookie),
+    db: Session = Depends(get_db)
+) -> User:
+    """Convert token data to User object"""
+    user_id = token_data.get_uuid()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid user token")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return user
+
+# 🔒 PROTECT ALL ENDPOINTS: Add dependencies to the router
 router = APIRouter(
     prefix="/youtube",
-    tags=["youtube"]
+    tags=["youtube"],
+    dependencies=[Depends(get_current_user)]  # ← This protects EVERY endpoint!
 )
 
 @router.get("/trending", response_model=TrendingVideosResponse)
+@limiter.limit(RATE_LIMITS["youtube_trending"])
 async def trending_videos(
+    request: Request,
     region: str = Query(default="US", description="ISO 3166-1 alpha-2 country code"),
     max_results: int = Query(default=25, ge=1, le=50, description="Number of results (1-50)"),
     page_token: Optional[str] = Query(default=None, description="Pagination token"),
@@ -32,7 +55,9 @@ async def trending_videos(
     )
 
 @router.get("/{video_id}/captions", response_model=CaptionsResponse)
+@limiter.limit(RATE_LIMITS["youtube_captions"])
 async def get_captions(
+    request: Request,
     video_id: str,
     language: str = Query(default='en', description="Language code (e.g., 'en', 'es', 'fr')")
 ):
@@ -56,7 +81,9 @@ async def get_captions(
 
 
 @router.get("/last-liked-video", response_model=LikedVideo)
+@limiter.limit(RATE_LIMITS["youtube_liked"])
 async def last_liked_video(
+    request: Request,
     current_user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)]
