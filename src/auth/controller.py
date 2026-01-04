@@ -7,7 +7,7 @@ from . import  models
 from . import service
 from fastapi.security import OAuth2PasswordRequestForm
 from ..database.core import DbSession
-from ..rate_limiter import limiter
+from ..rate_limiter import limiter, RATE_LIMITS
 from ..exceptions import AuthenticationError
 from .google.oauth_config import oauth  # fixed import
 from ..config import get_settings, Settings
@@ -22,7 +22,7 @@ router = APIRouter(
 )
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/hour")
+@limiter.limit(RATE_LIMITS["auth_register"])
 async def register_user(
     request: Request, 
     db: DbSession,
@@ -32,6 +32,13 @@ async def register_user(
     """Register user and automatically log them in by setting auth cookies."""
     # Create the user
     service.register_user(db, register_user_request)
+    
+    # Log successful registration
+    logging.info(
+        f"New user registered: {register_user_request.email}, "
+        f"IP: {request.client.host}, "
+        f"User-Agent: {request.headers.get('user-agent', 'unknown')}"
+    )
     
     # Automatically log them in after registration
     user = db.query(User).filter(User.email == register_user_request.email).first()
@@ -72,22 +79,11 @@ async def register_user(
         path="/"
     )
     
-    # Set user info cookie for frontend - SECURE VERSION
-    response.set_cookie(
-        key="user_email",
-        value=user.email,
-        httponly=True,  # ✅ Prevent XSS access
-        secure=settings.is_production,
-        samesite="strict",  # ✅ Better CSRF protection
-        max_age=24 * 60 * 60,  # 24 hours
-        path="/"
-    )
-    
     return response
 
 
 @router.post("/token", response_model=models.Token)
-@limiter.limit("5/minute")  # ✅ Rate limiting for login attempts
+@limiter.limit(RATE_LIMITS["auth_login"])
 async def login_for_access_token(
     request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -96,6 +92,13 @@ async def login_for_access_token(
 ):
     """Login endpoint that sets both access and refresh tokens."""
     token_data = service.login_for_access_token(form_data, db, settings)
+    
+    # Log successful login
+    logging.info(
+        f"User logged in via password: {form_data.username}, "
+        f"IP: {request.client.host}, "
+        f"User-Agent: {request.headers.get('user-agent', 'unknown')}"
+    )
     
     # Create response with token data
     response = JSONResponse(content={
@@ -130,6 +133,7 @@ async def login_for_access_token(
     return response
 
 @router.get("/google/login")
+@limiter.limit(RATE_LIMITS["auth_google_login"])
 async def google_login(request: Request):
     """🎯 Unified Google OAuth - handles both registration and login automatically."""
     redirect_uri = request.url_for('google_auth')
@@ -151,6 +155,7 @@ async def google_login(request: Request):
 
 # Handle the OAuth callback from Google
 @router.get("/google/callback")
+@limiter.limit(RATE_LIMITS["auth_google_callback"])
 async def google_auth(
     request: Request,
     db: DbSession,
@@ -179,10 +184,6 @@ async def google_auth(
         # - If user exists → Log them in
         # - If user doesn't exist → Create account and log them in
         # This eliminates confusing error messages!
-        
-        # Check if user exists
-        existing_user = db.query(User).filter(User.email == user_email).first()
-        is_new_user = existing_user is None
         
         # Pass full token dict to service (includes access_token, refresh_token, expires_in)
         jwt_token = service.google_authenticate_user(db, user_info, settings, google_tokens=token)
@@ -216,64 +217,24 @@ async def google_auth(
             path="/"
         )
         
-        # Set user info in a separate cookie - SECURE VERSION
-        response.set_cookie(
-            key="user_email",
-            value=user_email,
-            httponly=True,  # ✅ Prevent XSS access
-            secure=settings.is_production,
-            samesite="strict",  # ✅ Better CSRF protection
-            max_age=3600,
-            path="/"
-        )
-        
-        # Set user type cookie (new vs existing) - SECURE VERSION
-        response.set_cookie(
-            key="user_type",
-            value="new" if is_new_user else "existing",
-            httponly=True,  # ✅ Prevent XSS access
-            secure=settings.is_production,
-            samesite="strict",  # ✅ Better CSRF protection
-            max_age=3600,
-            path="/"
-        )
-        
-        # ✅ Store Google access token in HttpOnly cookie
-        google_access_token = token.get('access_token')
-        if google_access_token:
-            response.set_cookie(
-                key="google_access_token",
-                value=google_access_token,
-                httponly=True,  # ✅ Prevent XSS attacks
-                secure=settings.is_production,
-                samesite="lax",
-                max_age=3600,  # 1 hour (Google tokens typically expire in 3600s)
-                path="/"
-            )
-        
-        # ✅ Optional: Store Google refresh token for token renewal
-        google_refresh_token = token.get('refresh_token')
-        if google_refresh_token:
-            response.set_cookie(
-                key="google_refresh_token",
-                value=google_refresh_token,
-                httponly=True,
-                secure=settings.is_production,
-                samesite="lax",
-                max_age=30 * 24 * 60 * 60,  # 30 days
-                path="/"
-            )
-        
         return response
         
+    except KeyError as e:
+        logging.error(f"Missing required OAuth field: {str(e)}")
+        error_url = f"{settings.frontend_url}/?error=incomplete_oauth_data"
+        return RedirectResponse(url=error_url)
+    except AuthenticationError as e:
+        logging.error(f"Authentication failed: {str(e)}")
+        error_url = f"{settings.frontend_url}/?error=authentication_failed"
+        return RedirectResponse(url=error_url)
     except Exception as e:
-        logging.error(f"Google OAuth error: {str(e)}")
-        error_url = f"{settings.frontend_url}/?error=oauth_failed"
+        logging.error(f"Unexpected OAuth error: {str(e)}", exc_info=True)
+        error_url = f"{settings.frontend_url}/?error=server_error"
         return RedirectResponse(url=error_url)
 
 
 @router.get("/me", response_model=models.UserResponse)
-@limiter.limit("60/minute")  # ✅ Rate limiting for user info requests
+@limiter.limit(RATE_LIMITS["user_profile"])
 async def get_current_user_info(request: Request, current_user: service.CurrentUser, db: DbSession):
     """Get current user information."""
     try:
@@ -298,12 +259,17 @@ async def get_current_user_info(request: Request, current_user: service.CurrentU
             created_at=user.created_at.isoformat(),
             updated_at=user.updated_at.isoformat()
         )
+    except AuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
+        logging.error(f"Unexpected error in get_current_user_info: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get user information")
 
 
 @router.post("/logout")
-@limiter.limit("10/minute")  # ✅ Rate limiting for logout attempts
+@limiter.limit(RATE_LIMITS["general"])
 async def logout(request: Request, db: DbSession, settings: Annotated[Settings, Depends(get_settings)]):
     """✅ UPDATED: Logout endpoint - clears all cookies including Google tokens."""
     try:
@@ -327,59 +293,29 @@ async def logout(request: Request, db: DbSession, settings: Annotated[Settings, 
             samesite="lax"
         )
         
-        # ✅ Clear Google access token cookie
-        response.delete_cookie(
-            key="google_access_token",
-            path="/",
-            secure=settings.is_production,
-            httponly=True,
-            samesite="lax"
-        )
-        
-        # ✅ Clear Google refresh token cookie
-        response.delete_cookie(
-            key="google_refresh_token",
-            path="/",
-            secure=settings.is_production,
-            httponly=True,
-            samesite="lax"
-        )
-        
-        response.delete_cookie(
-            key="user_email",
-            path="/",
-            secure=settings.is_production,
-            httponly=False,
-            samesite="lax"
-        )
-        
-        response.delete_cookie(
-            key="user_type",
-            path="/",
-            secure=settings.is_production,
-            httponly=False,
-            samesite="lax"
-        )
-        
         return response
         
-    except Exception as e:
-        # Even if revocation fails, still clear cookies
-        response = JSONResponse(content={"message": "Logged out (some cleanup failed)"})
-        
+    except AuthenticationError as e:
+        # User wasn't authenticated, but that's okay for logout
+        logging.info(f"Logout attempted without valid authentication: {str(e)}")
+        response = JSONResponse(content={"message": "Logged out"})
         # Clear cookies anyway
         response.delete_cookie(key="access_token", path="/")
         response.delete_cookie(key="refresh_token", path="/")
-        response.delete_cookie(key="google_access_token", path="/")
-        response.delete_cookie(key="google_refresh_token", path="/")
-        response.delete_cookie(key="user_email", path="/")
-        response.delete_cookie(key="user_type", path="/")
+        return response
+    except Exception as e:
+        # Unexpected error during logout
+        logging.error(f"Error during logout: {str(e)}", exc_info=True)
+        response = JSONResponse(content={"message": "Logged out (some cleanup failed)"})
+        # Clear cookies anyway
+        response.delete_cookie(key="access_token", path="/")
+        response.delete_cookie(key="refresh_token", path="/")
         
         return response
 
 
 @router.put("/change-password", status_code=status.HTTP_200_OK)
-@limiter.limit("3/minute")  # ✅ Rate limiting for password changes (very restrictive)
+@limiter.limit(RATE_LIMITS["change-password"])
 async def change_password(
     request: Request,
     password_change: models.PasswordChange,
@@ -390,12 +326,15 @@ async def change_password(
     try:
         service.change_password(db, current_user.get_uuid(), password_change)
         return {"message": "Password changed successfully"}
-    except Exception as e:
+    except AuthenticationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.error(f"Unexpected error in change_password: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to change password")
 
 
 @router.post("/refresh")
-@limiter.limit("10/minute")  # ✅ Rate limiting for token refresh
+@limiter.limit(RATE_LIMITS["auth_refresh"])
 async def refresh_tokens(
     request: Request,
     db: DbSession,
@@ -441,10 +380,8 @@ async def refresh_tokens(
         
         return response
         
+    except AuthenticationError as e:
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
+        logging.error(f"Unexpected error in refresh_tokens: {str(e)}", exc_info=True)
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-
-
-
-
-
