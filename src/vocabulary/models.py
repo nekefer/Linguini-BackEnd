@@ -33,9 +33,12 @@ class SavedWordResponse(BaseModel):
         from_attributes = True
 
 
-class SavedWordsList(BaseModel):
+
+class SavedWordsPage(BaseModel):
     words: list[SavedWordResponse]
     total: int
+    page: int
+    page_size: int
 
 
 class CheckWordResponse(BaseModel):

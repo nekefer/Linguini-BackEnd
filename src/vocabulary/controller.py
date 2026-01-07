@@ -8,7 +8,7 @@ from src.vocabulary.service import VocabularyService
 from src.vocabulary.models import (
     SaveWordRequest, 
     SaveWordResponseSimple, 
-    SavedWordsList, 
+    SavedWordsPage,
     SavedWordResponse,
     WordResponse,
     CheckWordResponse,
@@ -64,18 +64,19 @@ async def save_word(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/saved", response_model=SavedWordsList)
+@router.get("/saved", response_model=SavedWordsPage)
 @limiter.limit(RATE_LIMITS["vocabulary_get"])
 async def get_saved_words(
     request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get user's saved words"""
+    """Get user's saved words with pagination."""
     try:
-        user_words = await VocabularyService.get_user_words(db, current_user, skip, limit)
+        skip = (page - 1) * page_size
+        user_words, total = await VocabularyService.get_user_words(db, current_user, skip, page_size)
         
         word_responses = []
         for user_word in user_words:
@@ -93,7 +94,12 @@ async def get_saved_words(
             )
             word_responses.append(saved_word_response)
         
-        return SavedWordsList(words=word_responses, total=len(word_responses))
+        return SavedWordsPage(
+            words=word_responses,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to fetch saved words")
 

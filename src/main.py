@@ -1,17 +1,24 @@
 from fastapi import FastAPI
 from .database.core import engine, Base
 from .api import register_routes
-from .logging import configure_logging
+from .logging import configure_logging, get_logger
+from .sentry import init_sentry
 from .config import get_settings
 from .rate_limiter import limiter, rate_limit_error_handler
 from .middleware.security import SecurityHeadersMiddleware
+from .middleware.logging import RequestLoggingMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from slowapi.errors import RateLimitExceeded
 
-settings = get_settings()
+# Initialize logging FIRST
+configure_logging()
 
-configure_logging(settings.log_level)
+# Initialize Sentry (production only)
+init_sentry()
+
+logger = get_logger(__name__)
+settings = get_settings()
 
 app = FastAPI(
     title="Linguini API",
@@ -25,8 +32,9 @@ app.state.limiter = limiter
 # Add rate limit error handler
 app.add_exception_handler(RateLimitExceeded, rate_limit_error_handler)
 
-# Add security headers middleware
-app.add_middleware(SecurityHeadersMiddleware)
+# Add middleware (order matters!)
+app.add_middleware(RequestLoggingMiddleware)  # Log all requests
+app.add_middleware(SecurityHeadersMiddleware)  # Add security headers
 
 app.add_middleware(
     SessionMiddleware,
@@ -45,6 +53,21 @@ app.add_middleware(
 # Only create tables in development environment
 if settings.is_development:
     Base.metadata.create_all(bind=engine)
-    print("Database tables created successfully (development mode)")
+    logger.info("Database tables created successfully (development mode)")
 
 register_routes(app)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Log application startup"""
+    logger.info(
+        "Application started",
+        extra={"environment": settings.environment, "debug": settings.is_development}
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Log application shutdown"""
+    logger.info("Application shutting down")
