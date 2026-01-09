@@ -50,10 +50,6 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 
-# Only create tables in development environment
-if settings.is_development:
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created successfully (development mode)")
 
 register_routes(app)
 
