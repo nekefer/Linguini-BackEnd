@@ -121,20 +121,19 @@ def get_password_hash(password: str) -> str:
 def authenticate_user(email: str, password: str, db: Session) -> User | bool:
     user = db.query(User).filter(User.email == email).first()
     if not user:
-        logging.warning(f"Failed authentication attempt for email: {email}")
+        logging.warning(f"Failed authentication attempt for email")
         return False
     
     # Only allow password login if auth_method is 'password' or 'both'
     if user.auth_method not in ('password', 'both'):
-        logging.warning(f"User {email} attempted password login but auth_method is '{user.auth_method}'")
         return False
     
     # Check if user has a password hash and verify it
     if not user.password_hash or not verify_password(password, user.password_hash):
-        logging.warning(f"Failed authentication attempt for email: {email}")
+        logging.warning(f"Failed authentication attempt for email")
         return False
     
-    logging.info(f"Successful password authentication for user: {email}")
+    logging.info(f"Successful password authentication for user")
     return user
 
 
@@ -306,7 +305,7 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
     if user:
         # Existing user - Login
         if not user.google_id and user.auth_method not in ('google', 'both'):
-            logging.warning(f"User {email} attempted Google login but is not authorized for Google login.")
+            logging.warning(f"User attempted Google login but is not authorized for Google login.")
             raise AuthenticationError("Google login not enabled for this user.")
         
         # Update auth_method based on existing credentials
@@ -329,14 +328,13 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
                 user.google_access_token = encrypt_token(access_raw)
             if refresh_raw:
                 user.google_refresh_token = encrypt_token(refresh_raw)
-                logger.info(f"Stored new (encrypted) refresh token for user {user.id}")
+                logging.info(f"Stored new (encrypted) refresh token for user")
             expires_in = google_tokens.get('expires_in', 3600)
             user.google_token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-            logger.info(f"Token expires at: {user.google_token_expires_at}")
             
         db.commit()
         db.refresh(user)
-        logging.info(f"Authenticated existing user via Google OAuth: {email}")
+        logging.info(f"Authenticated existing user via Google OAuth")
     else:
         # New user - Registration
         user = User(
@@ -358,7 +356,7 @@ def google_authenticate_user(db: Session, user_info: dict, settings: Settings, g
         db.add(user)
         db.commit()
         db.refresh(user)
-        logging.info(f"Registered new user via Google OAuth: {email}")
+        logging.info(f"Registered new user via Google OAuth")
 
     return create_token_pair(user, settings, db)  # Use token pair instead of single token
 

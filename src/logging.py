@@ -43,7 +43,7 @@ def configure_logging():
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
-    # Reduce noise from third-party librar`ies
+    # Reduce noise from third-party libraries
     logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
     logging.getLogger("fastapi").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
