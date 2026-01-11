@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, defer
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from src.entities.word import Word
@@ -18,6 +18,7 @@ class VocabularyService:
         
         # Get or create the word
         word = db.query(Word).filter(Word.word == clean_word).first()
+        print(f"Looking for word '{clean_word}': {'found' if word else 'not found'}")
         if not word:
             word = Word(word=clean_word)
             db.add(word)
@@ -28,6 +29,7 @@ class VocabularyService:
             UserWord.user_id == user.id,
             UserWord.word_id == word.id
         ).first()
+        
         
         if existing:
             raise ValidationError(f"Word '{clean_word}' is already saved")
@@ -59,14 +61,14 @@ class VocabularyService:
 
         items = (
             db.query(UserWord)
-            .options(joinedload(UserWord.word))
+            .options(joinedload(UserWord.word).defer(Word.updated_at))
             .filter(UserWord.user_id == user.id)
             .order_by(UserWord.saved_at.desc())
             .offset(skip)
             .limit(limit)
             .all()
         )
-
+        print(f"Retrieved {len(items)} words for user {user.id} (total: {total})")
         return items, total
     
     @staticmethod
